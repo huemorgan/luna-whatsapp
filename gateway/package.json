@@ -1,0 +1,21 @@
+{
+  "name": "luna-wa-gateway",
+  "version": "0.1.0",
+  "description": "Always-on WhatsApp Web (Baileys) gateway for Luna. Owns the socket, captures 100% of messages, exposes /qr /health /send.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@hapi/boom": "^10.0.1",
+    "@whiskeysockets/baileys": "^7.0.0-rc13",
+    "express": "^5.2.1",
+    "pg": "^8.22.0",
+    "pino": "^10.3.1",
+    "qrcode": "^1.5.4"
+  }
+}

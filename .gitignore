@@ -1,0 +1,25 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# Baileys auth / local data
+gateway/wa-auth/
+gateway/wa-auth-test/
+/data/
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# OS
+.DS_Store

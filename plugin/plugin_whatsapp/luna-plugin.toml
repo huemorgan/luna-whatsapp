@@ -1,0 +1,61 @@
+name = "plugin-whatsapp"
+version = "0.1.0"
+description = "Connect Luna to WhatsApp (Baileys gateway): inbound, context, replies."
+entry = "plugin_whatsapp"
+sdk_version = "0"
+license = "MIT"
+category = "connectors"
+tags = ["connector", "whatsapp", "messaging", "baileys"]
+readme = """
+# plugin-whatsapp
+
+Connects Luna to WhatsApp via the companion **luna-wa-gateway** (Node + Baileys).
+The gateway owns the always-on WhatsApp Web socket and captures 100% of messages;
+this plugin receives signed inbound events, applies an activation policy (DM
+allowlist / group @mention), builds a **cross-chat context window** (last 5 min or
+30 messages, owner-global, attributed), runs the agent, and sends the reply back
+through the gateway.
+
+Requires `LUNA_WHATSAPP_GATEWAY_URL` and `LUNA_WHATSAPP_SHARED_SECRET` (HMAC,
+shared with the gateway). Optional `LUNA_WHATSAPP_ALLOWLIST` (comma-separated
+E.164), `LUNA_WHATSAPP_GATEWAY_ADMIN_KEY` (to proxy the QR page in settings).
+
+Imports `luna_sdk` only. Owns its tables via `declarative_base()`.
+
+Source: https://github.com/huemorgan/plugin-whatsapp
+"""
+
+[requires]
+tools = 5
+depends_on = ["plugin-vault"]
+env = ["LUNA_WHATSAPP_GATEWAY_URL", "LUNA_WHATSAPP_SHARED_SECRET"]
+
+[[tools]]
+name = "wa_context"
+description = "Read recent cross-chat WhatsApp context (attributed)."
+policy = "auto_approve"
+risk_level = "low"
+
+[[tools]]
+name = "wa_list_chats"
+description = "List known WhatsApp chats (DMs and groups)."
+policy = "auto_approve"
+risk_level = "low"
+
+[[tools]]
+name = "wa_status"
+description = "Check WhatsApp link/connection health via the gateway."
+policy = "auto_approve"
+risk_level = "low"
+
+[[tools]]
+name = "wa_send"
+description = "Send a WhatsApp message to a chat."
+policy = "ask"
+risk_level = "medium"
+
+[[tools]]
+name = "wa_react"
+description = "React to a WhatsApp message with an emoji."
+policy = "ask"
+risk_level = "low"
