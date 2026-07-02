@@ -15,7 +15,10 @@ from datetime import datetime, timezone
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
+from pathlib import Path
+
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 from . import client, db
 from .context import build_context_block
@@ -182,15 +185,21 @@ def register_routes(app, ctx):
     async def settings():
         return HTMLResponse(_SETTINGS_HTML)
 
+    @router.get("/ui/bg.png")
+    async def settings_bg():
+        return FileResponse(_STATIC_DIR / "wa-bg-dark.png", media_type="image/png")
+
     app.include_router(router)
 
 
 _SETTINGS_HTML = """<!doctype html>
 <html><head><meta charset="utf-8"><title>WhatsApp — Luna</title>
 <style>
-  body{font-family:-apple-system,sans-serif;background:#0f0f1e;color:#e0e0e0;padding:24px}
-  .card{background:#1a1a2e;border-radius:12px;padding:20px;max-width:560px;margin-bottom:16px}
-  code{background:#2a2a3e;padding:2px 6px;border-radius:6px}
+  body{font-family:-apple-system,sans-serif;color:#e0e0e0;padding:24px;
+       background:#050505 url('/api/p/plugin-whatsapp/ui/bg.png') top center/560px repeat-y fixed}
+  .card{background:rgba(20,22,26,0.86);border:1px solid rgba(255,255,255,0.06);
+        border-radius:12px;padding:20px;max-width:560px;margin-bottom:16px;backdrop-filter:blur(2px)}
+  code{background:rgba(255,255,255,0.10);padding:2px 6px;border-radius:6px}
   a.btn{display:inline-block;background:#25D366;color:#000;padding:10px 18px;border-radius:8px;
         text-decoration:none;font-weight:600;margin-top:8px}
   pre{white-space:pre-wrap;word-break:break-all}

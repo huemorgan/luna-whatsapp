@@ -4,7 +4,9 @@
 > this repo. The companion docs go deeper:
 > [`architecture.md`](architecture.md) (how the pieces fit),
 > [`contract.md`](contract.md) (the wire contract that MUST stay in sync across
-> both ends), [`luna-integration.md`](luna-integration.md) (the Luna/`luna_sdk`
+> both ends), [`communication.md`](communication.md) (how Luna talks, remembers,
+> and behaves on WhatsApp — the reply-experience north star),
+> [`luna-integration.md`](luna-integration.md) (the Luna/`luna_sdk`
 > surface the plugin depends on), [`roadmap.md`](roadmap.md) (phases, gaps,
 > acceptance), and [`codemap.md`](codemap.md) (where every file lives and which
 > end it belongs to).

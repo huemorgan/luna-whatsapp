@@ -7,13 +7,15 @@ import QRCode from 'qrcode';
 import { config } from './config.js';
 import { verify } from './hmac.js';
 import { initSchema, getState } from './db.js';
-import { startSession, getConnState, getQr, sendText, react } from './wa.js';
+import { startSession, getConnState, getQr, sendText, sendMedia, react } from './wa.js';
 
 const app = express();
 
-// Stash the raw body so we can HMAC-verify signed requests.
+// Stash the raw body so we can HMAC-verify signed requests. Media payloads
+// (base64) can be large, so lift the default 100kb JSON limit.
 app.use(
   express.json({
+    limit: '25mb',
     verify: (req, _res, buf) => {
       req.rawBody = buf.toString('utf8');
     },
@@ -84,6 +86,43 @@ app.post('/send', async (req, res) => {
   }
   try {
     const result = await sendText(chat_jid, text, reply_to);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: e.message });
+  }
+});
+
+// Send media (image/video/audio/document/sticker). The plugin supplies EITHER a
+// public `url` the gateway can fetch, OR inline `data_base64` bytes (for assets
+// only reachable inside Luna, e.g. a browser screenshot). This is how WhatsApp
+// reaches full parity with the web chat: anything the agent produces as a file
+// or link can be delivered natively.
+app.post('/send-media', async (req, res) => {
+  if (!requireHmac(req, res)) return;
+  const {
+    chat_jid, kind = 'image', url, data_base64,
+    caption, mimetype, file_name, reply_to,
+    ptt, gif_playback, ptv,
+  } = req.body || {};
+  if (!chat_jid || (!url && !data_base64)) {
+    return res.status(400).json({ error: 'chat_jid and one of url|data_base64 required' });
+  }
+  try {
+    let source;
+    if (data_base64) {
+      source = Buffer.from(data_base64, 'base64');
+    } else if (/^https?:\/\//i.test(url)) {
+      const r = await fetch(url, { signal: AbortSignal.timeout(30000) });
+      if (!r.ok) throw new Error(`fetch media ${r.status}`);
+      source = Buffer.from(await r.arrayBuffer());
+    } else {
+      // A local path — hand straight to Baileys' url loader.
+      source = url;
+    }
+    const result = await sendMedia(chat_jid, kind, source, {
+      caption, mimetype, fileName: file_name, replyToWaId: reply_to,
+      ptt, gifPlayback: gif_playback, ptv,
+    });
     res.json({ ok: true, ...result });
   } catch (e) {
     res.status(502).json({ ok: false, error: e.message });

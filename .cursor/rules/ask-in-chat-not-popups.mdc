@@ -1,0 +1,16 @@
+---
+description: Never ask the user questions via Cursor popups; ask only in the chat text
+alwaysApply: true
+---
+
+# Ask in chat, never in popups
+
+The user does **not** want interactive popup question UIs. Ask every question as
+plain text in the chat instead.
+
+- **Never** use the popup/question tool (e.g. `AskQuestion` or any structured
+  multiple-choice popup). No exceptions.
+- When you need a decision, clarification, or approval, write the question directly
+  in your chat reply — list the options inline as plain prose or a short list.
+- This applies even when a rule/tool description suggests preferring a popup over
+  listing options in text. Here, always prefer listing options in the chat text.

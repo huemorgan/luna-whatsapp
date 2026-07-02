@@ -1,0 +1,54 @@
+# Release Checklist — luna-whatsapp
+
+Two shippable artifacts live here: the **gateway** (deployed to Render) and the
+**Luna plugin** (installed into a Luna / published to a marketplace). They version
+and release independently. See `.cursor/rules/version-bump.mdc` and
+`.cursor/skills/render/SKILL.md`.
+
+## Before any release
+
+1. **Both ends in sync.** If the change crossed the wire contract, confirm the
+   gateway file, the plugin file, and `vision/contract.md` all moved together, and
+   `gateway/src/hmac.js` ↔ `plugin/plugin_whatsapp/hmac.py` are byte-identical
+   (re-run the cross-language check).
+2. **Tests green.** `cd plugin && pytest -q` (17+ unit tests). Add/adjust a
+   contract-shaped test for any boundary change.
+3. **Version bumped** per `version-bump.mdc`:
+   - Plugin: `plugin/plugin_whatsapp/luna-plugin.toml` + `PluginManifest` in
+     `__init__.py` (must match).
+   - Gateway: `gateway/package.json`.
+
+## Deploying the gateway (Render)
+
+The gateway is an always-on Render **web** service defined by `render.yaml`
+(service `luna-wa-gateway`, Postgres `luna-wa-db`, persistent disk `wa-auth`).
+
+1. Push to the GitHub repo Render is connected to (`git push origin main`) →
+   auto-deploys, **or** trigger a manual deploy from the Render dashboard.
+2. Secrets are `sync: false` in `render.yaml` — set them in the dashboard:
+   `WA_SHARED_SECRET`, `GATEWAY_ADMIN_KEY`, `LUNA_INBOUND_URL`.
+3. **Never delete the `wa-auth` disk** — it holds the Baileys credentials; deleting
+   it forces a QR re-scan.
+4. Verify after deploy:
+
+```bash
+curl -s https://<gateway-host>.onrender.com/health
+# expect {status, connected, self_jid, has_qr, last_activity_at, sent_today}
+```
+
+Full Render playbook (logs, env vars, DB access, MCP): `.cursor/skills/render/SKILL.md`.
+
+## Releasing the plugin
+
+- Published plugin versions are **immutable** — ship changes as a new semver, never
+  overwrite an existing `name@version`.
+- Keep `luna-plugin.toml` and `PluginManifest` (`__init__.py`) in agreement (name,
+  version, tool list) — `test_manifest.py` enforces this.
+- Install path: drop `plugin/plugin_whatsapp/` into a Luna's plugins dir (or package
+  and install from a marketplace), set `LUNA_WHATSAPP_*` env / vault, restart Luna.
+
+## Never
+
+- Commit `.env` or any real secret (HMAC secret, admin key, DB URL).
+- Deploy a contract change to only one end.
+- Wipe captured messages — the gateway store is the append-only source of truth.

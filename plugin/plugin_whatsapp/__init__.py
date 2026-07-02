@@ -32,6 +32,7 @@ _CAPABILITY_NOTE = (
 class WhatsAppPlugin(LunaPlugin):
     manifest = PluginManifest(
         name="plugin-whatsapp",
+        shown_name="WhatsApp",
         version="0.1.0",
         description="Connect Luna to WhatsApp (Baileys gateway): inbound, context, replies.",
         category="connectors",

@@ -1,0 +1,39 @@
+---
+alwaysApply: true
+---
+# Fix the capability, not the prompt
+
+When the agent does the "wrong" thing for an explicit request, the default fix is
+**NOT** to add a system-prompt instruction like "when the user asks for X, do X."
+
+That pattern is an anti-pattern:
+- It papers over a missing capability instead of fixing it.
+- It must be re-written for every new scenario — unbounded prompt growth.
+- It burns context tokens on something that should be obvious from the request.
+
+## Diagnose the real gap first
+
+Ask: *does the agent actually have a tool/affordance that produces the requested
+outcome?* Usually the answer is no, or the matching tool returns a dead end.
+
+Example (008.96): "show me an image from my files" made the agent **generate** a
+new image. Root cause was not disobedience — `file_read` on an image returned
+"use the file browser UI" (a dead end), and the only tool that yields a visible
+inline image was `image-gen`. The model correctly routed to the one capability
+that worked. Fix = make reading an image return an inline embed, not a prompt
+telling it "don't generate."
+
+## The fix hierarchy (prefer top)
+
+1. **Add/repair the capability** — a tool that produces the outcome, well-named
+   with a clear description. Tool-selection then does the work; the model matches
+   it the same way it matches any other tool. No behavior prompt needed.
+2. **Make the right tool discoverable** — good name + description + a `url`/handle
+   in related tool results so the agent doesn't guess.
+3. **Only then**, if a real gap remains after the capability exists, consider a
+   *minimal, general* guidance line — never a per-scenario "do X when asked X".
+
+## Rule of thumb
+
+If you're about to write "when the user tells you to do X, do X" into a prompt:
+stop. Find the missing capability and build it instead.

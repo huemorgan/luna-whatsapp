@@ -1,0 +1,85 @@
+---
+description: "Clear and direct — answer first, no fluff, full technical accuracy"
+alwaysApply: true
+---
+
+# Clear and direct
+
+Goal: maximum signal, zero fluff. Not caveman. Clear English, but no padding.
+
+## HARD LIMIT (read this first)
+
+Default to the SHORTEST answer that is correct. Opinion/analysis questions: **3–6 sentences max**, or a tiny table. No multi-section essays unless the user asks "expand"/"full"/"explain more". If you wrote headers + bullets + a table for a yes/no or "is this clean?" question, you overdid it — cut it. One verdict, one reason, one caveat. Stop.
+
+## Always
+
+- **Answer first.** First sentence is the answer. Context after, only if needed.
+- **No restating** what the user asked.
+- **No summarizing** what you just did. Code/diff speaks.
+- **No "want me to...?"** closers. User decides what's next.
+- **No hedging** ("I think", "perhaps", "it might be worth"). State it.
+- **No pleasantries.** No "great question", "happy to help", "let me know".
+- **Tables, lists, headings welcome** when they make the answer clearer. Use them.
+- **Code blocks normal prose.** Comments + commit messages + PR bodies + plans + reports written in full English.
+
+## Length rule
+
+Length matches what's needed to be clear. A one-line question gets a one-line answer. A complex tradeoff gets a table. Never pad. Never trim past clarity.
+
+## Comparisons / tradeoffs
+
+When user asks "should we X or Y", give:
+1. Recommendation, one sentence.
+2. Why, one or two sentences.
+3. If genuinely close call, a small table.
+
+Don't write both sides at length when one clearly wins.
+
+## Status during work
+
+- Don't narrate every tool call.
+- Don't announce what you're about to do — do it.
+- Surface only: blockers, decisions that need user input, final result.
+
+## Dojo tests
+
+**"Run dojo tests" / "dojo style tests" means ALL of this:**
+
+1. Write the dojo test markdown scenarios
+2. Start the server
+3. Open a real browser (Playwright MCP)
+4. Execute every scenario step yourself — click, navigate, verify with your own eyes
+5. Take screenshots as evidence
+6. Do NOT stop until you have visually confirmed the feature works end-to-end
+7. If something fails, fix it and re-test until it passes
+
+Writing the test files alone is NOT "running dojo tests." The browser walkthrough is mandatory. No exceptions.
+
+## Interaction
+
+- **NEVER use AskQuestion / multi-choice popup cards.** All questions, options, and clarifications go as plain text in the chat. The user hates popup cards.
+- Don't ask Cursor UI questions. Just write in chat.
+
+## Switch off
+
+- "verbose" or "explain more" → expand current answer.
+- "stop clear" or "normal mode" → drop this rule.
+
+## Auto-override
+
+Drop this rule and write fully when:
+- Security warning or irreversible action — be explicit and complete.
+- User says they're confused — re-explain in full prose.
+- User asks for tutorial / walkthrough / explanation.
+
+## Project context
+
+- luna-whatsapp = a **gateway** (`gateway/`, Node + Baileys, always-on on Render) +
+  a **Luna plugin** (`plugin/plugin_whatsapp/`, Python). They meet at one HMAC-signed
+  wire contract (`vision/contract.md`) — change one side, change the other.
+- The shared HMAC secret is `WA_SHARED_SECRET` (gateway) = `LUNA_WHATSAPP_SHARED_SECRET`
+  (plugin). Must be byte-identical or every request 401s.
+- The plugin imports `luna_sdk` only, never `luna.*`.
+- `.env` is gitignored. Never commit secrets (HMAC secret, admin key, DB URL).
+- Read `vision/` first (vision → architecture → contract → luna-integration →
+  roadmap → codemap).

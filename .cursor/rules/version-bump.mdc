@@ -1,0 +1,48 @@
+# Version Bump — Every Commit
+
+## Where the version lives (luna-whatsapp)
+
+This repo has two independently versioned ends:
+
+| End | File(s) | Field |
+|-----|---------|-------|
+| Luna plugin | `plugin/plugin_whatsapp/luna-plugin.toml` **and** `plugin/plugin_whatsapp/__init__.py` (`PluginManifest`) | `version` — the two MUST agree (`test_manifest.py` checks this) |
+| Gateway | `gateway/package.json` | `version` |
+
+## Rule
+
+**Every commit that changes shipped code MUST bump a version** before committing.
+
+- Plugin code changed → bump `version` in **both** `luna-plugin.toml` and the
+  `PluginManifest` in `__init__.py`, keeping them byte-identical.
+- Gateway code changed → bump `version` in `gateway/package.json`.
+- A commit that changes both ends bumps both.
+
+Format is semver `MAJOR.MINOR.PATCH` (current plugin: `0.1.0`).
+
+| Digit | Trigger |
+|-------|---------|
+| PATCH | Bugfix, small change with no new public surface |
+| MINOR | New tool, new endpoint, new contract field, new capability |
+| MAJOR | Conceptual shift / breaking contract change |
+
+## Published versions are immutable
+
+Re-publishing the same plugin `name@version` with different bytes is rejected. Any
+change to a published plugin ships as a **new** version — never overwrite.
+
+## Exceptions (no bump)
+
+- Documentation-only changes (READMEs, `vision/*`, plan files, comments)
+- Test-only changes that don't alter shipped behavior
+- `.gitignore`, CI config, dev tooling with zero runtime impact
+
+## Enforcement
+
+When creating a git commit that touches shipped code:
+1. Read the current version(s) from the file(s) above.
+2. Increment per the table.
+3. Keep the two plugin manifests in sync if the plugin changed.
+4. Include the bumped file(s) in the commit.
+
+Never skip this. Never forget.

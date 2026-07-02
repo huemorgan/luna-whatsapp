@@ -1,0 +1,13 @@
+---
+description: Rules for browser interaction - never open browsers you can't control
+alwaysApply: true
+---
+
+# Browser Control Rules
+
+- NEVER open browsers you cannot control (e.g. `open "url"` or `open -a "Google Chrome" "url"`)
+- NEVER use the Cursor embedded browser (cursor-ide-browser MCP) — it can't share sessions with the user's browser
+- When browser interaction is needed, use the Playwright MCP (`user-playwright`) which controls a real Chrome instance via CDP
+- If the Playwright browser connection is lost, tell the user to restart it from Cursor MCP settings
+- If you cannot control a browser, give the user clear text instructions of exactly what to do — do not open uncontrollable browsers
+- When you need the user to do something in a browser (like adding redirect URIs in Google Cloud Console), just tell them step by step — don't waste time trying to open browsers

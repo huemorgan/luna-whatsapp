@@ -1,0 +1,45 @@
+---
+description: What luna-whatsapp is, its two ends, and how it relates to luna and luna-service
+globs: []
+alwaysApply: true
+---
+
+# luna-whatsapp — orientation
+
+**This repo puts a Luna agent on WhatsApp.** Scan a QR once and your Luna reads and
+replies to WhatsApp DMs and group @mentions, with cross-chat memory. Read
+`vision/vision.md` first; it is the north star.
+
+## The two ends (never forget there are two)
+
+1. **Gateway** — `gateway/`, Node + Baileys, always-on (Render). Owns the WhatsApp
+   Web socket, the QR, 100% message capture, and outbound sending.
+2. **Luna plugin** — `plugin/plugin_whatsapp/`, Python, loaded inside Luna. Decides
+   whether to answer, builds cross-chat context, runs the agent, sends replies back
+   through the gateway.
+
+They meet at exactly one place: the **wire contract** (`vision/contract.md`, HMAC-
+signed HTTP). **Any change to a message crossing that boundary changes BOTH ends in
+the same commit.** `gateway/src/hmac.js` and `plugin/plugin_whatsapp/hmac.py` must
+stay byte-identical.
+
+## Relationship to the sibling repos
+
+- `../luna` — the open-source Luna agent. The plugin imports **`luna_sdk` only**,
+  never `luna.*` (a unit test guards this). That keeps the plugin portable and
+  marketplace-installable. See `vision/luna-integration.md`. **Do not edit `../luna`
+  from here** — Luna-core changes go through a proposal in that repo.
+- `../luna-service` — the hosted, multi-tenant control plane (Phase 2). It wraps OSS
+  Luna and would host the multi-tenant version of this gateway. The single-owner MVP
+  in this repo is the seed; multi-tenant hardening lives under luna-service's own
+  devprocess. See `vision/roadmap.md` "Phase 3 — Multi-tenant".
+
+## Non-negotiables (from vision.md)
+
+Capture 100% before deciding · one socket owner (only the gateway) · signed on every
+hop · cross-chat memory is the headline feature · answer with judgment (DM allowlist
+/ group @mention) · WhatsApp-native short voice · respect Baileys ban-risk (dedicated
+number, pacing, allowlist-first) · `luna_sdk` only on the plugin side.
+
+When a change might affect the hosted platform, check `../luna-service` (its
+`vision/` and `plans/`) before assuming.

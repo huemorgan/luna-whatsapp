@@ -1,0 +1,4 @@
+node_modules/
+.env
+.wa-auth/
+*.log

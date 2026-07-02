@@ -1,0 +1,56 @@
+---
+description: Fixed local server addresses for luna-whatsapp development (gateway + plugin-in-Luna)
+globs:
+alwaysApply: true
+---
+
+# Local Servers (luna-whatsapp)
+
+This repo has **two ends** that run as separate processes (see
+`vision/architecture.md`). There is no single combined server.
+
+| Process | Runtime | Where it runs | Start command |
+|---------|---------|---------------|---------------|
+| Gateway | Node 20 + Baileys | `gateway/` (owns the WhatsApp socket) | `cd gateway && npm ci && node src/index.js` (or `npm start`) |
+| Luna plugin | Python | loaded **inside a running Luna** at `../luna` | drop/symlink `plugin/plugin_whatsapp/` into Luna's plugins dir, then start Luna |
+
+## Gateway
+
+- Reads env from `gateway/.env` (see `gateway/.env.example`). Key vars:
+  `WA_SHARED_SECRET`, `GATEWAY_ADMIN_KEY`, `LUNA_INBOUND_URL`, `DATABASE_URL`,
+  `WA_AUTH_DIR`.
+- Endpoints: `GET /health`, `GET /qr?key=<GATEWAY_ADMIN_KEY>`, `POST /send`,
+  `POST /react` (see `vision/contract.md`).
+- Baileys auth lives under `WA_AUTH_DIR` (locally a folder; on Render a persistent
+  disk). Do **not** delete it or you force a re-scan.
+- Only **one** gateway process may own the socket at a time.
+
+## Luna plugin (runs inside Luna)
+
+- Luna itself runs from the sibling repo `../luna` (single server, port 3000 — see
+  that repo's `local-servers.mdc`). The plugin mounts routes under
+  `/api/p/plugin-whatsapp/*`.
+- Plugin env / vault keys: `LUNA_WHATSAPP_SHARED_SECRET` (must equal the gateway's
+  `WA_SHARED_SECRET`), `LUNA_WHATSAPP_GATEWAY_URL`,
+  `LUNA_WHATSAPP_GATEWAY_ADMIN_KEY`.
+- The gateway's `LUNA_INBOUND_URL` must point at the running Luna's
+  `/api/p/plugin-whatsapp/inbound`. For a local gateway → local Luna round-trip use
+  a tunnel (e.g. ngrok/cloudflared) or run both on the same host.
+
+## Plugin unit tests (no Luna runtime needed)
+
+```bash
+cd plugin
+uv venv --python 3.12 .venv && source .venv/bin/activate
+uv pip install -e ".[dev]"
+pytest -q
+```
+
+`plugin/tests/conftest.py` injects a tiny `luna_sdk` stub so the package imports
+without a real Luna.
+
+## The shared secret must match
+
+`WA_SHARED_SECRET` (gateway) and `LUNA_WHATSAPP_SHARED_SECRET` (plugin) MUST be
+byte-identical, or every signed request 401s. `hmac.js` and `hmac.py` implement the
+identical scheme — keep them in sync.

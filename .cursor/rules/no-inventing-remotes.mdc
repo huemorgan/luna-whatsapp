@@ -1,0 +1,33 @@
+---
+description: Never invent a remote or do unrequested work; if a given repo URL doesn't exist, say so and stop
+alwaysApply: true
+---
+
+# Do exactly what's asked — never invent a remote
+
+## If a given repo URL doesn't exist, STOP and tell the user
+
+When asked to add a submodule, clone, or "create a submodule" from a specific Git
+URL:
+
+1. First verify the remote exists and is reachable (`git ls-remote <url>` or
+   `gh repo view <owner>/<repo>`).
+2. If it does **not** exist, or you cannot access it: **stop and tell the user
+   plainly** — "that repo doesn't exist / I can't reach it." Then wait.
+
+Do **NOT**, in that situation:
+- create the repo,
+- push code to a new repo,
+- scaffold/populate it "to be helpful,"
+- substitute a different URL or path.
+
+A request to "add a submodule from `<url>`" is **not** permission to create that repo.
+
+## Don't do things you weren't asked to do
+
+- Do only the specific action requested. No extra repos, commits, files, branches,
+  refactors, renames, or "improvements" that weren't asked for.
+- Creating GitHub repos, pushing, and committing are actions the user must request
+  explicitly. Never do them on your own initiative.
+- When something the user asked for can't be done as stated, say so in plain chat and
+  wait — do not guess and act.

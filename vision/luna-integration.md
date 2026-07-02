@@ -78,18 +78,20 @@ result, usage = await ctx.agent.run_turn(
 
 ### `ToolDef`
 Fields: `name`, `description`, `parameters` (JSON schema), `policy`
-(`auto_approve` | `ask` | `prompt_always`), `risk_level` (`low` | `medium` |
-`high`), `sensitive_args` (kept out of logs), `chat_only`, `timeout_seconds`.
-Convention: read = `auto_approve`/`low`; external write = `ask`/`medium`; delete or
-secrets = `prompt_always`/`high`. Our tools:
+(`auto_approve` | `prompt_first_time_only` | `prompt_always` | `block` — these are
+the only values core's dispatch gate honors; anything else falls through and runs
+un-gated), `risk_level` (`low` | `medium` | `high`), `sensitive_args` (kept out of
+logs), `chat_only`, `timeout_seconds`.
+Convention: read = `auto_approve`/`low`; external write = `prompt_always`/`medium`;
+delete or secrets = `prompt_always`/`high`. Our tools:
 
 | tool | policy | risk | note |
 |---|---|---|---|
 | `wa_context` | auto_approve | low | read cross-chat window; `sensitive_args=["body"]` |
 | `wa_list_chats` | auto_approve | low | |
 | `wa_status` | auto_approve | low | gateway health |
-| `wa_send` | ask | medium | external side-effect; `sensitive_args=["text"]` |
-| `wa_react` | ask | low | |
+| `wa_send` | prompt_always | medium | external side-effect; `sensitive_args=["text"]` |
+| `wa_react` | prompt_always | low | |
 
 ### Plugin-owned DB tables
 ```python

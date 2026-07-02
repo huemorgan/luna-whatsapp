@@ -1,0 +1,13 @@
+---
+description: Never execute a plan until the user explicitly says to execute it
+alwaysApply: true
+---
+
+# Plan Before Execute
+
+When creating or discussing a plan:
+
+- **NEVER execute changes while in planning mode.** Write the plan file, discuss it, iterate on it — but do NOT touch source files until the user explicitly tells you to execute.
+- Explicit execution signals: "go", "do it", "execute", "apply it", "make the changes". Anything short of that means keep planning.
+- If the user says "make a plan" or asks for changes to a plan, that means ONLY write/update the plan file. Do not edit source code.
+- When in doubt, ask: "Ready to apply?"

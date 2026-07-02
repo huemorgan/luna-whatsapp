@@ -1,0 +1,20 @@
+---
+description: Always link plan files at the end of plan creation or execution
+alwaysApply: true
+---
+
+# Always link the plan at the end
+
+Whenever you **create**, **update**, or **execute** a plan, end your response
+with a clickable markdown link to the plan file(s) so the user can open them in
+one click.
+
+- Link `PLAN.md` (and `RESEARCH.md` / any sibling doc you touched) by its path.
+- Put the link(s) on the **last line(s)** of the response, under a short label.
+- If multiple plan files were created/changed, link each one.
+- Applies to plan folders under `plans/NNN-name/` and any ad-hoc plan file.
+
+Example ending:
+
+> Plan: [plans/008.96-file-image-display/PLAN.md](plans/008.96-file-image-display/PLAN.md)
+> Research: [plans/008.96-file-image-display/RESEARCH.md](plans/008.96-file-image-display/RESEARCH.md)
