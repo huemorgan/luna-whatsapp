@@ -4,10 +4,15 @@
 import express from 'express';
 import QRCode from 'qrcode';
 
+import { createRequire } from 'module';
+
 import { config } from './config.js';
 import { verify } from './hmac.js';
-import { initSchema, getState } from './db.js';
+import { initSchema, getState, getMessageStats } from './db.js';
+import { buildStatsPayload } from './stats.js';
 import { startSession, getConnState, getQr, sendText, sendMedia, react } from './wa.js';
+
+const pkg = createRequire(import.meta.url)('../package.json');
 
 const app = express();
 
@@ -40,6 +45,32 @@ app.get('/health', async (_req, res) => {
     sentToday = st?.sent_today ?? 0;
   } catch {}
   res.json({ status: 'ok', ...conn, sent_today: sentToday });
+});
+
+// Monitoring endpoint for the luna-service WhatsApp page. Admin-key protected
+// (same key as /qr). Socket state still returns when Postgres is down, with
+// db.ok=false — the page distinguishes "server up, DB down" from "server down".
+app.get('/stats', async (req, res) => {
+  const key = req.query.key || req.header('x-admin-key');
+  if (key !== config.adminKey) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  const conn = getConnState();
+  let state = null;
+  let stats = null;
+  let dbLatencyMs = null;
+  let dbError = null;
+  try {
+    const t0 = Date.now();
+    [state, stats] = await Promise.all([getState(), getMessageStats()]);
+    dbLatencyMs = Date.now() - t0;
+  } catch (e) {
+    dbError = e.message;
+  }
+  res.json(buildStatsPayload({
+    conn, state, stats, dbLatencyMs, dbError,
+    cap: config.sendDailyCap, version: pkg.version,
+  }));
 });
 
 app.get('/qr', async (req, res) => {

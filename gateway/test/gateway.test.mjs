@@ -9,7 +9,8 @@ process.env.GATEWAY_ADMIN_KEY ||= 'unit-test-admin';
 process.env.DATABASE_URL ||= 'postgres://localhost/none';
 
 const { sign, verify } = await import('../src/hmac.js');
-const { buildMediaContent, toMediaUpload, withComposing } = await import('../src/wa.js');
+const { buildMediaContent, toMediaUpload, withComposing, parseReaction } =
+  await import('../src/wa.js');
 
 test('hmac sign/verify roundtrip', () => {
   const body = JSON.stringify({ chat_jid: 'x@s.whatsapp.net', text: 'hi' });
@@ -85,4 +86,131 @@ test('withComposing: propagates errors from the wrapped fn (interval cleared)', 
   );
   // If the keepalive interval were left running, the test process would hang;
   // node --test completing is itself the assertion that it was cleared.
+});
+
+// --- reactions: only forward a like on OUR message ---
+
+const dmReaction = (over = {}) => ({
+  key: { remoteJid: '12345@s.whatsapp.net', fromMe: true, id: 'MSG1', ...over.key },
+  reaction: {
+    text: '👍',
+    key: { remoteJid: '12345@s.whatsapp.net', fromMe: false, id: 'RID1' },
+    ...over.reaction,
+  },
+});
+
+test('parseReaction: forwards a like on our own DM message', () => {
+  const env = parseReaction(dmReaction(), { account: 'default' });
+  assert.ok(env);
+  assert.equal(env.kind, 'reaction');
+  assert.equal(env.reaction_emoji, '👍');
+  assert.equal(env.reaction_target_id, 'MSG1');
+  assert.equal(env.reaction_target_from_me, true);
+  assert.equal(env.is_reply_to_me, true);
+  assert.equal(env.chat_jid, '12345@s.whatsapp.net');
+  assert.equal(env.wa_msg_id, 'RID1');
+});
+
+test('parseReaction: ignores a reaction to someone else\'s message', () => {
+  const entry = dmReaction({ key: { fromMe: false } });
+  assert.equal(parseReaction(entry), null);
+});
+
+test('parseReaction: ignores our own reaction', () => {
+  const entry = dmReaction({ reaction: { key: { fromMe: true } } });
+  assert.equal(parseReaction(entry), null);
+});
+
+test('parseReaction: ignores a reaction removal (empty emoji)', () => {
+  const entry = dmReaction({ reaction: { text: '' } });
+  assert.equal(parseReaction(entry), null);
+});
+
+test('parseReaction: group reaction uses the reactor participant as sender', () => {
+  const entry = {
+    key: { remoteJid: '120@g.us', fromMe: true, id: 'GMSG' },
+    reaction: { text: '❤️', key: { fromMe: false, participant: '99@s.whatsapp.net', id: 'GRID' } },
+  };
+  const env = parseReaction(entry, { account: 'default' });
+  assert.equal(env.chat_kind, 'group');
+  assert.equal(env.sender_jid, '99@s.whatsapp.net');
+  assert.equal(env.reaction_emoji, '❤️');
+});
+
+test('parseReaction: synthesizes an id when the reaction key has none', () => {
+  const entry = dmReaction({ reaction: { key: { fromMe: false } } });
+  const env = parseReaction(entry);
+  assert.equal(env.wa_msg_id, 'react-MSG1-👍');
+});
+
+// /stats payload assembly — pure shaping, no Postgres. Guards the contract the
+// luna-service monitoring page reads.
+const { buildStatsPayload } = await import('../src/stats.js');
+
+const CONN = {
+  status: 'open', connected: true, self_jid: '1@s.whatsapp.net',
+  has_qr: false, last_activity_at: '2026-01-01T00:00:00.000Z',
+};
+
+test('buildStatsPayload: full happy path shapes windows and totals', () => {
+  const p = buildStatsPayload({
+    conn: CONN,
+    state: { sent_today: 7 },
+    cap: 300,
+    version: '0.1.0',
+    dbLatencyMs: 12,
+    stats: {
+      windows: {
+        total_messages: '120', total_chats: '9', total_users: '5',
+        last_message_at: new Date('2026-01-01T00:00:00Z'),
+        in_1h: '3', out_1h: '2', chats_1h: '2', users_1h: '1',
+        in_24h: '80', out_24h: '40', chats_24h: '8', users_24h: '5',
+      },
+      hourly: [{ hour: new Date('2026-01-01T00:00:00Z'), inbound: '3', outbound: '1' }],
+      media: [{ kind: 'image', n: '4' }, { kind: 'audio', n: '1' }],
+    },
+  });
+  assert.equal(p.connected, true);
+  assert.equal(p.db.ok, true);
+  assert.equal(p.db.latency_ms, 12);
+  assert.equal(p.sent_today, 7);
+  assert.equal(p.send_daily_cap, 300);
+  assert.deepEqual(p.totals, { messages: 120, chats: 9, users: 5 });
+  assert.deepEqual(p.last_hour, {
+    messages_in: 3, messages_out: 2, active_chats: 2, active_users: 1,
+  });
+  assert.deepEqual(p.last_24h, {
+    messages_in: 80, messages_out: 40, active_chats: 8, active_users: 5,
+  });
+  assert.deepEqual(p.media_24h, { image: 4, audio: 1 });
+  assert.deepEqual(p.hourly, [{ hour: '2026-01-01T00:00:00.000Z', in: 3, out: 1 }]);
+  assert.equal(p.last_message_at, '2026-01-01T00:00:00.000Z');
+  assert.equal(typeof p.uptime_s, 'number');
+  assert.equal(typeof p.rss_mb, 'number');
+});
+
+test('buildStatsPayload: DB down still reports socket state', () => {
+  const p = buildStatsPayload({
+    conn: CONN, state: null, stats: null, cap: 300,
+    version: '0.1.0', dbError: 'connection refused',
+  });
+  assert.equal(p.connected, true);
+  assert.equal(p.status, 'open');
+  assert.equal(p.db.ok, false);
+  assert.equal(p.db.error, 'connection refused');
+  assert.equal(p.sent_today, 0);
+  assert.equal(p.totals, undefined);
+});
+
+test('buildStatsPayload: empty table yields zeroed counters', () => {
+  const p = buildStatsPayload({
+    conn: { ...CONN, status: 'connecting', connected: false },
+    state: { sent_today: 0 }, cap: 300, version: '0.1.0', dbLatencyMs: 3,
+    stats: { windows: {}, hourly: [], media: [] },
+  });
+  assert.equal(p.connected, false);
+  assert.deepEqual(p.totals, { messages: 0, chats: 0, users: 0 });
+  assert.deepEqual(p.media_24h, {});
+  assert.deepEqual(p.hourly, []);
+  assert.equal(p.last_message_at, null);
 });

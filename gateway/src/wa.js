@@ -192,6 +192,56 @@ async function handleMessage(message, isNotify) {
   );
 }
 
+// Decide whether a Baileys reaction entry should be forwarded, and shape it into
+// an inbound envelope (minus chat_name, which needs an async group lookup). Pure
+// and exported so it can be unit-tested. Returns null to drop the reaction.
+//
+// We forward ONLY reactions to messages WE sent — "the user liked something Luna
+// wrote" — so the agent can see it. Reactions to other messages are noise; our
+// own reactions and reaction-removals (empty emoji) are dropped.
+export function parseReaction(entry, { account } = {}) {
+  const targetKey = entry?.key || {};
+  const reaction = entry?.reaction || {};
+  const chatJid = targetKey.remoteJid;
+  if (!chatJid || chatJid === 'status@broadcast') return null;
+
+  const emoji = (reaction.text || '').trim();
+  if (!emoji) return null;                 // reaction removed
+  const reactorKey = reaction.key || {};
+  if (reactorKey.fromMe) return null;      // our own reaction
+  if (!targetKey.fromMe) return null;      // not a reaction to OUR message
+
+  const kind = chatKind(chatJid);
+  const reactorJid = kind === 'group' ? (reactorKey.participant || null) : chatJid;
+  return {
+    account: account ?? null,
+    chat_jid: chatJid,
+    chat_kind: kind,
+    chat_name: null,
+    sender_jid: reactorJid,
+    sender_name: null,               // reaction events don't carry a push name
+    wa_msg_id: reactorKey.id || `react-${targetKey.id}-${emoji}`,
+    reply_to_id: targetKey.id,       // the message that was reacted to
+    ts: new Date().toISOString(),
+    kind: 'reaction',
+    body: null,
+    reaction_emoji: emoji,
+    reaction_target_id: targetKey.id,
+    reaction_target_from_me: true,
+    mentioned_me: false,
+    is_reply_to_me: true,            // a like on our msg counts as addressing us
+  };
+}
+
+async function handleReaction(entry) {
+  const env = parseReaction(entry, { account: config.account });
+  if (!env) return;
+  if (env.chat_kind === 'group') {
+    env.chat_name = await resolveGroupName(env.chat_jid);
+  }
+  await forwardInbound(env);
+}
+
 export async function startSession() {
   const { state, saveCreds } = await useMultiFileAuthState(config.authDir);
   const { version } = await fetchLatestBaileysVersion();
@@ -258,6 +308,17 @@ export async function startSession() {
         await handleMessage(message, isNotify);
       } catch (e) {
         console.error('[wa] handleMessage error:', e.message);
+      }
+    }
+  });
+
+  sock.ev.on('messages.reaction', async (reactions) => {
+    markActivity();
+    for (const entry of reactions || []) {
+      try {
+        await handleReaction(entry);
+      } catch (e) {
+        console.error('[wa] handleReaction error:', e.message);
       }
     }
   });

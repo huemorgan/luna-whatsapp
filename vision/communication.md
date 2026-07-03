@@ -75,9 +75,16 @@ to opt in.
 2. **Exactly one message per turn.** One inbound → one outbound (plus at most one
    media attachment when media was asked for). If you're tempted to send two
    bubbles, merge them or pick the one that matters.
-3. **Don't reply-quote by default.** In a 1:1 DM, just talk — no quoted context.
-   Quote *only* when it removes real ambiguity: in a busy group, or when
-   answering a specific older message after other traffic.
+3. **Don't reply-quote by default — just send the next message.** This is how
+   people actually text: you write your message; you don't "reply" to every line.
+   WhatsApp's quote-reply is a *special* gesture that means "I'm pointing back at
+   *this specific earlier message*." Use it **only** for that: answering one
+   question among many in a busy group, or picking up a thread after other traffic
+   came in between. In a normal 1:1 back-and-forth, **never** quote. Mechanically:
+   the reply turn defaults to an un-quoted send; the agent opts in by prefixing its
+   reply with `[[reply]]`, which quotes the message it was addressed on. Auto-
+   quoting every reply is the #1 thing that makes Luna feel like a bot — it is a
+   bug, not a style.
 4. **Mirror the user's language and register.** They wrote Hebrew → answer in
    Hebrew. They wrote one terse line → don't send a paragraph. Match tone
    (casual/formal) and length to theirs.
@@ -85,8 +92,20 @@ to opt in.
    no bullet dumps, no walls. Emojis only if they use them.
 6. **In groups, be a guest.** Answer only what you were addressed for; never
    dominate; don't recap the whole thread.
-7. **Media is native.** To send an image/GIF/file, deliver it as media (see
-   [`contract.md`](contract.md) `/send-media`), not as a raw URL pasted in text.
+7. **Media is native — including things you just made.** To send an image, GIF,
+   video, or file, deliver it as WhatsApp media (see [`contract.md`](contract.md)
+   `/send-media`), never as a raw URL pasted in text. This must hold for **files
+   the agent generates**, not just public links: a `generate_image`, a
+   `browser_screenshot`, an `edit_image`, or anything written to Files lives at an
+   *internal* reference (`images/<id>.png`, `browser/<id>.png`, the Files read
+   route, or the image-gen serve route) — the plugin resolves that reference to
+   bytes **in-process** (`ctx.storage.read`, or a local HTTP GET) and sends it as
+   `data_base64`. Multiple images/videos/files in one turn are fine — each on its
+   own line. See "Generated media" below.
+   - **GIFs must actually move.** WhatsApp has no real GIF type — an animated
+     "GIF" is an mp4 sent with `gifPlayback`. A `.gif` sent as an image is frozen.
+     So a GIPHY `.gif` is rewritten to its `…/giphy.mp4` sibling and delivered as
+     `video`+`gif_playback` (no ffmpeg). See "Reactions & GIFs" below.
 8. **Truth about actions.** Never claim you sent, saved, or did something unless
    the tool acked it. If a capability genuinely isn't available, say the useful
    half ("want me to find a GIF instead?") — don't explain your internal tooling.
@@ -97,6 +116,67 @@ to opt in.
 people. Short spoken replies (TTS voice notes) are a first-class output, not an
 afterthought — see [`roadmap.md`](roadmap.md). The same one-message, mirror-their-
 language rules apply.
+
+### Generated media (why "it made the image but didn't send it")
+
+A real failure (2026-07-02): the user asked for an image; once the image-gen
+plugin was installed the agent **did** generate it, then replied *"here's your
+cat 🐱  images/628a…​png"* — and nothing arrived on WhatsApp. Root cause, exactly:
+
+- `run_turn` hands the caller **only the model's final text** — tool *artifacts*
+  (the generated file, its URL, its embed) are stringified into the tool result
+  and never returned to the plugin. So the only signal that a file exists is
+  whatever reference the model chose to type into its reply.
+- Generated files don't live at a public URL. `generate_image` saves to
+  `images/<id>.png` (Files) + a relative serve route; `browser_screenshot` saves
+  to `browser/<id>.png`. The model surfaced the **Files ref**, not an `https://`.
+- The plugin's media extractor only recognised `https://…​.png` URLs, so a bare
+  `images/…` ref was ignored → text sent, image dropped.
+
+**The contract this implies:** a reference to a file the agent produced is a
+first-class deliverable, equal to a public URL. The plugin must recognise
+internal refs (`images/…`, `browser/…`, the Files read route, the image-gen serve
+route) and resolve them to bytes **inside Luna** (`ctx.storage.read`, else a
+localhost HTTP GET), sending them via `data_base64`. This covers multiple files,
+videos, and any file from the Files dir — not just one image.
+
+**The honest limitation:** because artifacts aren't returned by `run_turn`, this
+still depends on the model *mentioning the ref* in its reply. The persona makes
+that a rule ("always surface the reference of anything you generated"). The clean
+fix is Luna-core returning artifacts from a user-facing turn — tracked in
+[`../plans/002-whatsapp-full-parity/luna-core-proposal.md`](../plans/002-whatsapp-full-parity/luna-core-proposal.md).
+Until then, ref-in-text + in-process resolution is the working bridge.
+
+**Tool awareness:** the agent once claimed it had "no image plugin" *after* one
+was installed. `run_turn` uses a process-wide cached agent; a plugin installed
+mid-process isn't reflected in the cached system prompt's tool list until Luna
+restarts. Treat "installed a plugin → restart Luna (or invalidate the cached
+headless agent)" as the rule; longer-term this is a core cache-invalidation fix.
+
+### Reactions & GIFs (the emoji layer)
+
+Two directions, both first-class on WhatsApp:
+
+- **A GIF must animate.** WhatsApp has no GIF format — a moving "GIF" is an mp4
+  with `gifPlayback`. So a GIPHY `.gif` is rewritten to `…/giphy.mp4` and sent as
+  `video`+`gif_playback` (`media.py::giphy_mp4`). A `.gif` delivered as an image
+  is a still frame; that was the "it's not animating" bug. Non-GIPHY `.gif` URLs
+  still fall back to a static image (no transcoder), which is acceptable until a
+  gateway-side gif→mp4 (ffmpeg) exists.
+- **Luna sees when you like her message.** A reaction to one of *Luna's own*
+  messages is forwarded as a `kind="reaction"` inbound (see
+  [`contract.md`](contract.md)). She reads it as *"<name> reacted ❤️ to your
+  message: …"*. A like usually needs **no reply** — reacting is often the end of
+  the exchange — so the default is silence unless a person naturally would say
+  something back (real news, a question-emoji). Reactions to other people's
+  messages are ignored (noise).
+- **Luna reacting to your messages** (thumbs-up etc.) reuses the existing
+  `/react` path. The reply turn can't call the `wa_react` *tool* (it would bypass
+  approval), so the mechanism is an opt-in reply directive `[[react:👍]]` —
+  symmetric with `[[reply]]` — which taps that emoji on the triggering message
+  (`media.py::strip_react_marker`, applied in `routes.py`). It can be react-only
+  (no text) or react + a line. One reaction per message; the marker is stripped
+  so it never shows in the text.
 
 ---
 
@@ -186,11 +266,15 @@ plan when we execute):
 | # | Seam | Where | Change the behavior implies |
 |---|------|-------|------------------------------|
 | A | Protocol noise reaches the agent | `gateway/src/wa.js` (and/or `policy.py`) | Drop empty-body / `system` / receipt / presence frames before forwarding; never forward a non-message. |
-| B | Reflexive quoting | `plugin/plugin_whatsapp/routes.py` | `reply_to` only in groups or on genuine ambiguity; DMs send unquoted. |
+| B | Reflexive quoting | `plugin_whatsapp/routes.py` | **Done.** Default un-quoted send; `reply_to` only when the model opts in with a leading `[[reply]]` marker. |
 | C | Reasoning/meta leaks | WhatsApp persona + turn-prompt override | Explicitly override the "background step / not seen" instruction; forbid meta and planning in output. |
 | D | Multiple/empty sends | `routes.py` | Exactly one text send; skip empty/whitespace/meta-only output; de-dupe. |
 | E | Context polluted by noise | plugin store write path | Don't persist empty/system/agent-non-answers into the context window. |
 | F | Language mirroring | persona | Instruct: answer in the user's language and register. |
+| G | Generated files not delivered | `plugin_whatsapp/media.py` + `routes.py` | **Done.** Recognise internal file refs (`images/…`, `browser/…`, plugin routes); resolve to bytes via `ctx.storage`/local GET; send as `data_base64`. Supports multiple images/videos/files. |
+| H | GIFs don't animate | `plugin_whatsapp/media.py` | **Done.** GIPHY `.gif` → `…/giphy.mp4` sent as `video`+`gif_playback` (WhatsApp animates mp4, not gif). |
+| I | Luna can't see likes on her messages | `gateway/src/wa.js` + `routes.py` | **Done.** `messages.reaction` → `kind="reaction"` inbound for reactions to our msgs; agent reads it, usually stays silent. |
+| J | Luna reacting to user messages | `routes.py` + `/react` | **Done.** `[[react:👍]]` reply directive (symmetric with `[[reply]]`); taps that emoji on the triggering message. React-only or react+text. |
 
 Each of A–F maps to one of the five observed failures. Implementing them is the
 "WhatsApp communication skill" made real — a behavior contract enforced by the

@@ -61,6 +61,22 @@ try {
       ],
     );
     console.log(JSON.stringify({ ok: true }));
+  } else if (action === 'plant-out') {
+    // Insert a LUNA-side (from_me) message with an explicit wa_msg_id, so a
+    // reaction scenario can react to a known message Luna "sent".
+    const waId = arg('wa_msg_id', 'OUT-' + crypto.randomUUID().slice(0, 12));
+    await client.query(
+      `INSERT INTO whatsapp_plugin_messages
+         (id, chat_jid, chat_kind, chat_name, sender_jid, sender_name,
+          from_me, wa_msg_id, ts, kind, body, created_at)
+       VALUES ($1,$2,$3,$4,null,'Luna',true,$5, now(), 'text', $6, now())
+       ON CONFLICT (wa_msg_id) DO NOTHING`,
+      [
+        crypto.randomUUID(), arg('chat'), arg('kind', 'dm'),
+        arg('name', null), waId, arg('text', ''),
+      ],
+    );
+    console.log(JSON.stringify({ ok: true, wa_msg_id: waId }));
   } else {
     console.error('unknown action:', action);
     process.exit(2);

@@ -4,3 +4,6 @@
 [submodule "plugin-whatsapp"]
 	path = plugin-whatsapp
 	url = https://github.com/huemorgan/plugin-whatsapp.git
+[submodule "luna-service"]
+	path = luna-service
+	url = https://github.com/huemorgan/luna-service.git

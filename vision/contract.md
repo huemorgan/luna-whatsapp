@@ -36,6 +36,7 @@ differ and every signature will fail. Always verify against the raw body.
 | GET | `/health` | none | – | `{status, connected, self_jid, has_qr, last_activity_at, sent_today}` |
 | GET | `/qr?key=<GATEWAY_ADMIN_KEY>` | admin key | – | HTML QR page (auto-refreshes; shows "linked" once connected) |
 | POST | `/send` | HMAC | `{chat_jid, text, reply_to?}` | `{ok, wa_msg_id}` |
+| POST | `/send-media` | HMAC | `{chat_jid, kind, url?\|data_base64?, caption?, mimetype?, file_name?, reply_to?, gif_playback?, ptt?, ptv?}` | `{ok, wa_msg_id}` |
 | POST | `/react` | HMAC | `{chat_jid, wa_msg_id, emoji}` | `{ok}` |
 
 ### Plugin (called by the gateway)
@@ -63,12 +64,39 @@ Produced in `gateway/src/wa.js` (`forwardInbound` payload), consumed in
   "wa_msg_id":     "3EB0...",
   "reply_to_id":   "wa_msg_id being replied to, or null",
   "ts":            "2026-07-01T09:00:00.000Z",   // ISO 8601, UTC
-  "kind":          "text|image|audio|video|doc|sticker|contact|location|other",
+  "kind":          "text|image|audio|video|doc|sticker|contact|location|reaction|other",
   "body":          "message text / caption / '' ",
   "mentioned_me":  true,   // gateway computed: was the linked number @mentioned?
   "is_reply_to_me":false   // gateway computed: is this a reply to the bot?
 }
 ```
+
+### Reaction events (`kind == "reaction"`)
+
+When someone reacts (a "like"/emoji) to a message **Luna herself sent**, the
+gateway (`wa.js::parseReaction`) forwards a reaction envelope. It reuses the
+fields above (`sender_jid`/`sender_name` = the reactor; `chat_*` = the chat) and
+adds:
+
+```json
+{
+  "kind":                    "reaction",
+  "body":                    null,
+  "reaction_emoji":          "❤️",           // the emoji tapped ('' removal is dropped, never sent)
+  "reaction_target_id":      "wa_msg_id of the message that was reacted to",
+  "reaction_target_from_me": true,           // always true — only likes on OUR messages are forwarded
+  "reply_to_id":             "= reaction_target_id",
+  "is_reply_to_me":          true,           // a like on our msg counts as addressing us
+  "wa_msg_id":               "reaction event id (idempotency key)"
+}
+```
+
+Gateway guarantees for reactions:
+- Only reactions **to our own messages** are forwarded (`target.fromMe`), never
+  reactions to other people's messages, our own reactions, or removals.
+- The plugin records it as context (`kind="reaction"`, body `"reacted <emoji> to
+  your message"`) and may reply, but usually stays silent — a like rarely needs a
+  reply (see `_build_reaction_prompt`).
 
 Rules the gateway guarantees:
 - Only **genuinely new inbound** is forwarded: `from_me == false` and Baileys

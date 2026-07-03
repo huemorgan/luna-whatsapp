@@ -110,6 +110,39 @@ export async function getState() {
   return res.rows[0] ?? null;
 }
 
+// Read-only aggregates for the /stats monitoring endpoint. Three queries, all
+// served by idx_wa_msg_ts; cheap at this table's scale (one account's traffic).
+export async function getMessageStats() {
+  const windows = await pool.query(`
+    SELECT
+      count(*)                                                          AS total_messages,
+      count(DISTINCT chat_jid)                                          AS total_chats,
+      count(DISTINCT sender_jid) FILTER (WHERE NOT from_me)             AS total_users,
+      max(ts)                                                           AS last_message_at,
+      count(*)                   FILTER (WHERE ts > now() - interval '1 hour' AND NOT from_me) AS in_1h,
+      count(*)                   FILTER (WHERE ts > now() - interval '1 hour' AND from_me)     AS out_1h,
+      count(DISTINCT chat_jid)   FILTER (WHERE ts > now() - interval '1 hour')                 AS chats_1h,
+      count(DISTINCT sender_jid) FILTER (WHERE ts > now() - interval '1 hour' AND NOT from_me) AS users_1h,
+      count(*)                   FILTER (WHERE ts > now() - interval '24 hours' AND NOT from_me) AS in_24h,
+      count(*)                   FILTER (WHERE ts > now() - interval '24 hours' AND from_me)     AS out_24h,
+      count(DISTINCT chat_jid)   FILTER (WHERE ts > now() - interval '24 hours')                 AS chats_24h,
+      count(DISTINCT sender_jid) FILTER (WHERE ts > now() - interval '24 hours' AND NOT from_me) AS users_24h
+    FROM whatsapp_messages`);
+  const hourly = await pool.query(`
+    SELECT date_trunc('hour', ts) AS hour,
+           count(*) FILTER (WHERE NOT from_me) AS inbound,
+           count(*) FILTER (WHERE from_me)     AS outbound
+    FROM whatsapp_messages
+    WHERE ts > now() - interval '24 hours'
+    GROUP BY 1 ORDER BY 1`);
+  const media = await pool.query(`
+    SELECT kind, count(*) AS n
+    FROM whatsapp_messages
+    WHERE ts > now() - interval '24 hours' AND kind <> 'text'
+    GROUP BY kind ORDER BY n DESC`);
+  return { windows: windows.rows[0], hourly: hourly.rows, media: media.rows };
+}
+
 // Daily send counter with automatic rollover. Returns false if the cap is hit.
 export async function bumpSendCounter(cap) {
   const today = new Date().toISOString().slice(0, 10);

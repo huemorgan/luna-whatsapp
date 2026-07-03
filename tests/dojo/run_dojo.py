@@ -158,6 +158,9 @@ def send_turn(turn: dict) -> dict:
         "mentioned_me": bool(turn.get("mentioned", False)),
         "is_reply_to_me": False,
     }
+    # A turn can override any envelope field (e.g. a reaction event: kind="reaction"
+    # plus reaction_emoji / reaction_target_id / is_reply_to_me).
+    env.update(turn.get("env", {}))
     return post_inbound(env)
 
 
@@ -168,6 +171,13 @@ def run_turns(cfg: dict) -> dict:
         if t.get("plant"):
             jid, kind = resolve_jid(t)
             db("plant", chat=jid, kind=kind, name=t.get("name", "Someone"),
+               text=t.get("text", ""))
+            continue
+        if t.get("plant_out"):
+            # Plant a message Luna "sent" (from_me) with a known wa_msg_id so a
+            # later reaction turn can react to it.
+            jid, kind = resolve_jid(t)
+            db("plant-out", chat=jid, kind=kind, wa_msg_id=t.get("wa_msg_id", ""),
                text=t.get("text", ""))
             continue
         if t.get("judge"):
@@ -191,10 +201,12 @@ def run_turns(cfg: dict) -> dict:
 
     texts = [r["body"] for r in rows if r["kind"] == "text" and r["body"].strip()]
     media = [{"kind": r["kind"], "url": r["body"]} for r in rows if r["kind"] != "text"]
+    quoted = any(r.get("reply_to_id") for r in rows)
     reply = "\n".join(texts).strip()
     if not reply and not media:
         reply = "(no reply — stayed silent)"
-    return {"sent": judged.get("text", ""), "reply": reply, "media": media, "resp": resp}
+    return {"sent": judged.get("text", ""), "reply": reply, "media": media,
+            "quoted": quoted, "resp": resp}
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +233,8 @@ def judge(cfg: dict, run: dict) -> dict:
         f"USER SENT:\n{run['sent'] or '(empty message)'}\n\n"
         f"LUNA'S ACTUAL REPLY:\n{run['reply']}\n\n"
         f"MEDIA:\n{media_desc}\n\n"
+        f"Reply was sent as a WhatsApp quote-reply (quoting the user's message): "
+        f"{run.get('quoted', False)}\n\n"
         f"RUBRIC (what a good reply looks like):\n{cfg['rubric']}"
     )
     body = json.dumps({
@@ -279,7 +293,8 @@ def main() -> None:
             continue
         print(f"  sent : {run['sent']!r}", flush=True)
         print(f"  reply: {run['reply'][:200]!r}"
-              + (f"  [+{len(run['media'])} media]" if run["media"] else ""), flush=True)
+              + (f"  [+{len(run['media'])} media]" if run["media"] else "")
+              + ("  [quoted]" if run.get("quoted") else ""), flush=True)
         v = judge(cfg, run)
         print(f"  VERDICT: {v['verdict'].upper()}  — {v.get('notes', '')}", flush=True)
         results.append((cfg, run, v))
@@ -318,6 +333,7 @@ def write_results(results: list) -> None:
             run["reply"],
             "```",
         ]
+        lines += ["", f"**Quote-reply:** {'yes' if run.get('quoted') else 'no'}"]
         if run["media"]:
             lines.append("")
             for m in run["media"]:
