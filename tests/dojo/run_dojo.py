@@ -51,7 +51,7 @@ LUNA_ENV = next(
 DB_HELPER = REPO / "gateway" / "tools" / "db_helper.mjs"
 
 INBOUND_URL = "http://localhost:3000/api/p/plugin-whatsapp/inbound"
-SELF_JID = "15550001111@s.whatsapp.net"
+SELF_JID = os.environ.get("WA_SELF_JID", "15550001111@s.whatsapp.net")
 JUDGE_MODEL = "claude-sonnet-4-6"
 
 
