@@ -3,7 +3,42 @@
 
 const num = (v) => (v == null ? 0 : Number(v));
 
-export function buildStatsPayload({ conn, state, stats, cap, version, dbLatencyMs, dbError }) {
+const iso = (v) => (v instanceof Date ? v.toISOString() : v ?? null);
+
+function hostOf(url) {
+  if (!url) return null;
+  try {
+    return new URL(url).host;
+  } catch {
+    return null;
+  }
+}
+
+// 003 multi-Luna: per-account rows for /stats.accounts[]. accountRows are the
+// registry rows; liveStates maps account_id -> getConnState() of the running
+// session; perAccount24h maps account_id -> {in_24h, out_24h}.
+export function buildAccountsBreakdown(accountRows, liveStates, perAccount24h, defaultCap) {
+  return (accountRows || []).map((row) => {
+    const live = liveStates?.[row.account_id];
+    const m = perAccount24h?.[row.account_id];
+    return {
+      account_id: row.account_id,
+      status: live?.status ?? row.status,
+      connected: live ? live.connected : row.status === 'open',
+      self_jid: live?.self_jid ?? row.self_jid ?? null,
+      has_qr: live?.has_qr ?? false,
+      inbound_host: hostOf(row.inbound_url),
+      messages_24h_in: num(m?.in_24h),
+      messages_24h_out: num(m?.out_24h),
+      sent_today: row.sent_today ?? 0,
+      daily_cap: row.daily_cap ?? num(defaultCap),
+      last_seen: iso(row.last_seen),
+      enabled: row.enabled !== false,
+    };
+  });
+}
+
+export function buildStatsPayload({ conn, state, stats, cap, version, dbLatencyMs, dbError, accounts }) {
   const mem = process.memoryUsage();
   const base = {
     ...conn,
@@ -44,13 +79,11 @@ export function buildStatsPayload({ conn, state, stats, cap, version, dbLatencyM
     },
     media_24h: Object.fromEntries((stats.media || []).map((r) => [r.kind, num(r.n)])),
     hourly: (stats.hourly || []).map((r) => ({
-      hour: r.hour instanceof Date ? r.hour.toISOString() : r.hour,
+      hour: iso(r.hour),
       in: num(r.inbound),
       out: num(r.outbound),
     })),
-    last_message_at:
-      w.last_message_at instanceof Date
-        ? w.last_message_at.toISOString()
-        : w.last_message_at ?? null,
+    last_message_at: iso(w.last_message_at),
+    ...(accounts ? { accounts } : {}),
   };
 }

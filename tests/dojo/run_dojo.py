@@ -42,7 +42,9 @@ REPO = HERE.parent.parent
 CONV_DIR = HERE / "conversations"
 RESULTS = HERE / "RESULTS.md"
 
-GATEWAY_ENV = REPO / "gateway" / ".env"
+# WA_DOJO_ENV / WA_DOJO_INBOUND_URL let a run target an isolated Luna+gateway
+# (own ports/DB) instead of the default local dev pair on :3000/:10000.
+GATEWAY_ENV = Path(os.environ.get("WA_DOJO_ENV", REPO / "gateway" / ".env"))
 # The running Luna is the sibling ../luna; the submodule luna/ may lack .env.
 LUNA_ENV = next(
     (p for p in (REPO.parent / "luna" / ".env", REPO / "luna" / ".env") if p.exists()),
@@ -50,7 +52,10 @@ LUNA_ENV = next(
 )
 DB_HELPER = REPO / "gateway" / "tools" / "db_helper.mjs"
 
-INBOUND_URL = "http://localhost:3000/api/p/plugin-whatsapp/inbound"
+INBOUND_URL = os.environ.get(
+    "WA_DOJO_INBOUND_URL",
+    "http://localhost:3000/api/p/plugin-whatsapp/inbound",
+)
 SELF_JID = os.environ.get("WA_SELF_JID", "15550001111@s.whatsapp.net")
 JUDGE_MODEL = "claude-sonnet-4-6"
 

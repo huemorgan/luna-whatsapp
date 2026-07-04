@@ -9,13 +9,18 @@
 luna-whatsapp/
 ├── gateway/                         ── THE GATEWAY END (Node + Baileys, always-on)
 │   ├── src/
-│   │   ├── index.js                 HTTP server: /health /qr /send /react; boots everything
-│   │   ├── wa.js                    Baileys session: connect, QR, watchdog, reconnect,
-│   │   │                            100% capture, sendText/react, inbound normalization
-│   │   ├── db.js                    Postgres schema + insert/upsert/state/send-counter
-│   │   ├── inbound.js               builds + HMAC-signs the inbound envelope, POSTs to Luna
+│   │   ├── index.js                 HTTP server: /health /qr /stats /send /react
+│   │   │                            + /accounts admin API (003); boots everything
+│   │   ├── session.js               Session class (one per account): connect, QR, watchdog,
+│   │   │                            reconnect, 100% capture, sendText/react + pure helpers
+│   │   ├── accounts.js              account registry: lifecycle, auth-dir migration,
+│   │   │                            HMAC→account resolution (x-wa-account / secret scan)
+│   │   ├── db.js                    Postgres schema + whatsapp_accounts registry + capture
+│   │   ├── inbound.js               HMAC-signs the envelope with the ACCOUNT's secret,
+│   │   │                            POSTs to that account's Luna
+│   │   ├── stats.js                 /stats payload assembly (global + accounts[])
 │   │   ├── hmac.js                  SIGN/VERIFY  ← must match plugin/…/hmac.py exactly
-│   │   └── config.js                env parsing
+│   │   └── config.js                env parsing (legacy single-account vars = seed only)
 │   ├── Dockerfile · package.json · .env.example · .dockerignore
 │
 ├── plugin/                          ── THE LUNA PLUGIN END (Python, loaded in Luna)

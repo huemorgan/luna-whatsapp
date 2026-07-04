@@ -1,17 +1,17 @@
-// Forward a normalized inbound message to the Luna plugin, HMAC-signed.
+// Forward a normalized inbound message to the owning Luna, HMAC-signed with
+// THAT account's secret (003 multi-Luna: each account routes to its own Luna).
 // Fire-and-forget with a couple of retries; the message is already durably in
 // Postgres, so a failed forward is recoverable (Luna can also poll/replay later).
 
 import { sign } from './hmac.js';
-import { config } from './config.js';
 
-export async function forwardInbound(envelope) {
-  if (!config.lunaInboundUrl) {
-    // Not wired yet (e.g. before the tunnel is up). Capture still happened.
+export async function forwardInbound(envelope, { url, secret } = {}) {
+  if (!url) {
+    // Account not wired to a Luna yet. Capture still happened.
     return { ok: false, skipped: true };
   }
   const body = JSON.stringify(envelope);
-  const { timestamp, signature } = sign(config.sharedSecret, body);
+  const { timestamp, signature } = sign(secret, body);
 
   // The plugin processes inbound synchronously: it runs a full agent turn (which
   // may call web/search/screenshot tools and take tens of seconds) and only then
@@ -24,7 +24,7 @@ export async function forwardInbound(envelope) {
   let lastErr;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const res = await fetch(config.lunaInboundUrl, {
+      const res = await fetch(url, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',

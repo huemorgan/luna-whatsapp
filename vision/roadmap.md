@@ -33,8 +33,16 @@ on WhatsApp from a live Luna, end to end.
 - Ban-risk: pacing caps + jitter (basic version already in `wa.js`), monitoring.
 - Media: download + store to object storage; inbound voice transcription.
 
-### Phase 3 — Multi-tenant (hosted luna-service)
-The big one. Turn the single-owner gateway into a multi-tenant one:
+### Phase 3 — Multi-tenant (hosted luna-service) — **SHIPPED (003), amended**
+Landed as `plans/003-whatsapp-multiluna/` (2026-07-04), driven by
+`luna-service/plans/034-whatsapp/multi-luna-gateway-ask.md`. Shipped: N Baileys
+`Session`s (one per account/number/Luna), the `whatsapp_accounts` registry
+(per-account HMAC secret, inbound_url, daily cap, `gateway_id` sharding hook),
+the `/accounts` admin API + per-account QR, `/stats.accounts[]`, plugin v0.6.0
+(`x-wa-account`, vault-first account id). Deliberate deviation from the sketch
+below: inbound is a DIRECT signed POST per account (per the ask) — the
+relay/queue/wake-machine layer stays on luna-service's side. Still open from
+the sketch: R2 namespacing, media offload. Original sketch:
 - N Baileys sessions, one per linked tenant number; a `wa_sessions` registry keyed
   by `tenant_id`, with a `gateway_id` column for sharding across instances.
 - Inbound reuses the luna-service Composio-style relay/forwarder: verify Standard

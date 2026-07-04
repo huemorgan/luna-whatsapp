@@ -1,6 +1,12 @@
 // Postgres access + schema bootstrap. The append-only whatsapp_messages table is
 // the source of truth; 100% of inbound and outbound are written here BEFORE any
 // agent decision, so a Luna restart replays from the DB and never loses a message.
+//
+// Since 003 (multi-Luna): whatsapp_accounts is the routing registry — one row per
+// account = WhatsApp number = Luna instance, carrying that account's HMAC secret,
+// inbound URL, link status, and daily send budget. whatsapp_state (the old
+// singleton) is deprecated: migrated into whatsapp_accounts('default') on boot,
+// then never read or written again.
 
 import pg from 'pg';
 import { config } from './config.js';
@@ -36,15 +42,17 @@ CREATE TABLE IF NOT EXISTS whatsapp_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_wa_msg_ts ON whatsapp_messages (ts DESC);
 CREATE INDEX IF NOT EXISTS idx_wa_msg_chat_ts ON whatsapp_messages (chat_jid, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_wa_msg_account_ts ON whatsapp_messages (account, ts DESC);
 
 CREATE TABLE IF NOT EXISTS whatsapp_chats (
-  chat_jid     text PRIMARY KEY,
+  chat_jid     text NOT NULL,
   chat_kind    text NOT NULL,
   chat_name    text,
   policy       jsonb,
   updated_at   timestamptz NOT NULL DEFAULT now()
 );
 
+-- Deprecated (pre-003 singleton); kept so old rows survive a rollback.
 CREATE TABLE IF NOT EXISTS whatsapp_state (
   id           int PRIMARY KEY DEFAULT 1,
   account      text,
@@ -56,13 +64,150 @@ CREATE TABLE IF NOT EXISTS whatsapp_state (
   watchdog     jsonb,
   CONSTRAINT singleton CHECK (id = 1)
 );
-INSERT INTO whatsapp_state (id, status) VALUES (1, 'starting')
-  ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS whatsapp_accounts (
+  account_id   text PRIMARY KEY,
+  secret       text NOT NULL,
+  inbound_url  text,
+  gateway_id   text NOT NULL DEFAULT 'gw-1',
+  status       text NOT NULL DEFAULT 'created',
+  self_jid     text,
+  last_seen    timestamptz,
+  sent_today   int NOT NULL DEFAULT 0,
+  sent_day     date,
+  daily_cap    int,
+  enabled      boolean NOT NULL DEFAULT true,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  updated_at   timestamptz NOT NULL DEFAULT now()
+);
 `;
 
 export async function initSchema() {
   await pool.query(SCHEMA);
+  await migrateChatsPk();
+  await seedDefaultAccount();
 }
+
+// Pre-003 whatsapp_chats had PK (chat_jid). Multi-account needs (account,
+// chat_jid) — the same group can be visible to two different numbers.
+async function migrateChatsPk() {
+  await pool.query(
+    `ALTER TABLE whatsapp_chats ADD COLUMN IF NOT EXISTS account text NOT NULL DEFAULT 'default'`,
+  );
+  const pk = await pool.query(`
+    SELECT a.attname
+      FROM pg_index i
+      JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey)
+     WHERE i.indrelid = 'whatsapp_chats'::regclass AND i.indisprimary`);
+  const cols = pk.rows.map((r) => r.attname).sort();
+  if (cols.join(',') !== 'account,chat_jid') {
+    await pool.query(`
+      DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'whatsapp_chats_pkey') THEN
+          ALTER TABLE whatsapp_chats DROP CONSTRAINT whatsapp_chats_pkey;
+        END IF;
+      END $$`);
+    await pool.query(`ALTER TABLE whatsapp_chats ADD PRIMARY KEY (account, chat_jid)`);
+  }
+}
+
+// Zero-downtime migration: the pre-003 deployment is env-configured. If the
+// registry has no `default` row and the legacy secret env is set, materialize
+// the account from env + the old whatsapp_state row. Idempotent.
+async function seedDefaultAccount() {
+  if (!config.sharedSecret) return;
+  const existing = await pool.query(
+    `SELECT 1 FROM whatsapp_accounts WHERE account_id = $1`,
+    [config.account],
+  );
+  if (existing.rows.length) return;
+  const st = (await pool.query(`SELECT * FROM whatsapp_state WHERE id = 1`)).rows[0];
+  await pool.query(
+    `INSERT INTO whatsapp_accounts
+       (account_id, secret, inbound_url, gateway_id, status, self_jid,
+        last_seen, sent_today, sent_day)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+     ON CONFLICT (account_id) DO NOTHING`,
+    [
+      config.account, config.sharedSecret, config.lunaInboundUrl || null,
+      config.gatewayId, st?.status ?? 'created', st?.self_jid ?? null,
+      st?.last_seen ?? null, st?.sent_today ?? 0, st?.sent_day ?? null,
+    ],
+  );
+  console.log(`[db] seeded account '${config.account}' from legacy env`);
+}
+
+// ---------------------------------------------------------------------------
+// accounts registry
+// ---------------------------------------------------------------------------
+
+export async function listAccounts({ includeDisabled = false } = {}) {
+  const q = includeDisabled
+    ? `SELECT * FROM whatsapp_accounts WHERE gateway_id = $1 ORDER BY created_at`
+    : `SELECT * FROM whatsapp_accounts WHERE gateway_id = $1 AND enabled ORDER BY created_at`;
+  return (await pool.query(q, [config.gatewayId])).rows;
+}
+
+export async function getAccount(accountId) {
+  const r = await pool.query(
+    `SELECT * FROM whatsapp_accounts WHERE account_id = $1`,
+    [accountId],
+  );
+  return r.rows[0] ?? null;
+}
+
+export async function insertAccount({ account_id, secret, inbound_url, daily_cap }) {
+  const r = await pool.query(
+    `INSERT INTO whatsapp_accounts (account_id, secret, inbound_url, gateway_id, daily_cap)
+     VALUES ($1,$2,$3,$4,$5)
+     RETURNING *`,
+    [account_id, secret, inbound_url ?? null, config.gatewayId, daily_cap ?? null],
+  );
+  return r.rows[0];
+}
+
+// Patch arbitrary registry columns (secret rotation, inbound_url move, state
+// writes from the session). Only whitelisted keys to keep SQL injection out.
+const ACCOUNT_COLS = new Set([
+  'secret', 'inbound_url', 'status', 'self_jid', 'last_seen',
+  'sent_today', 'sent_day', 'daily_cap', 'enabled',
+]);
+
+export async function updateAccount(accountId, patch) {
+  const fields = [];
+  const vals = [];
+  let i = 1;
+  for (const [k, v] of Object.entries(patch)) {
+    if (!ACCOUNT_COLS.has(k)) throw new Error(`bad account column: ${k}`);
+    fields.push(`${k} = $${i++}`);
+    vals.push(v);
+  }
+  if (!fields.length) return null;
+  vals.push(accountId);
+  const r = await pool.query(
+    `UPDATE whatsapp_accounts SET ${fields.join(', ')}, updated_at = now()
+      WHERE account_id = $${i} RETURNING *`,
+    vals,
+  );
+  return r.rows[0] ?? null;
+}
+
+// Per-account daily send counter with automatic day rollover. Returns false
+// when the cap is hit. cap comes from the row's daily_cap or the global default.
+export async function bumpSendCounter(accountId, cap) {
+  const today = new Date().toISOString().slice(0, 10);
+  const acc = await getAccount(accountId);
+  let sent = acc?.sent_today ?? 0;
+  const day = acc?.sent_day ? new Date(acc.sent_day).toISOString().slice(0, 10) : null;
+  if (day !== today) sent = 0;
+  if (sent >= cap) return false;
+  await updateAccount(accountId, { sent_today: sent + 1, sent_day: today });
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// capture
+// ---------------------------------------------------------------------------
 
 export async function insertMessage(m) {
   // Idempotent on wa_msg_id so replays / dupes never double-write.
@@ -86,32 +231,19 @@ export async function insertMessage(m) {
 
 export async function upsertChat(c) {
   await pool.query(
-    `INSERT INTO whatsapp_chats (chat_jid, chat_kind, chat_name, updated_at)
-     VALUES ($1,$2,$3, now())
-     ON CONFLICT (chat_jid) DO UPDATE SET chat_name = EXCLUDED.chat_name, updated_at = now()`,
-    [c.chat_jid, c.chat_kind, c.chat_name ?? null],
+    `INSERT INTO whatsapp_chats (account, chat_jid, chat_kind, chat_name, updated_at)
+     VALUES ($1,$2,$3,$4, now())
+     ON CONFLICT (account, chat_jid) DO UPDATE SET chat_name = EXCLUDED.chat_name, updated_at = now()`,
+    [c.account ?? 'default', c.chat_jid, c.chat_kind, c.chat_name ?? null],
   );
 }
 
-export async function setState(patch) {
-  const fields = [];
-  const vals = [];
-  let i = 1;
-  for (const [k, v] of Object.entries(patch)) {
-    fields.push(`${k} = $${i++}`);
-    vals.push(v);
-  }
-  if (!fields.length) return;
-  await pool.query(`UPDATE whatsapp_state SET ${fields.join(', ')} WHERE id = 1`, vals);
-}
+// ---------------------------------------------------------------------------
+// stats
+// ---------------------------------------------------------------------------
 
-export async function getState() {
-  const res = await pool.query('SELECT * FROM whatsapp_state WHERE id = 1');
-  return res.rows[0] ?? null;
-}
-
-// Read-only aggregates for the /stats monitoring endpoint. Three queries, all
-// served by idx_wa_msg_ts; cheap at this table's scale (one account's traffic).
+// Read-only aggregates for the /stats monitoring endpoint. All served by the
+// ts indexes; cheap at this table's scale.
 export async function getMessageStats() {
   const windows = await pool.query(`
     SELECT
@@ -143,14 +275,14 @@ export async function getMessageStats() {
   return { windows: windows.rows[0], hourly: hourly.rows, media: media.rows };
 }
 
-// Daily send counter with automatic rollover. Returns false if the cap is hit.
-export async function bumpSendCounter(cap) {
-  const today = new Date().toISOString().slice(0, 10);
-  const st = await getState();
-  let sent = st?.sent_today ?? 0;
-  const day = st?.sent_day ? new Date(st.sent_day).toISOString().slice(0, 10) : null;
-  if (day !== today) sent = 0;
-  if (sent >= cap) return false;
-  await setState({ sent_today: sent + 1, sent_day: today });
-  return true;
+// 24h in/out per account, for the /stats accounts[] breakdown.
+export async function getAccountMessageStats() {
+  const r = await pool.query(`
+    SELECT account,
+           count(*) FILTER (WHERE NOT from_me) AS in_24h,
+           count(*) FILTER (WHERE from_me)     AS out_24h
+    FROM whatsapp_messages
+    WHERE ts > now() - interval '24 hours'
+    GROUP BY account`);
+  return Object.fromEntries(r.rows.map((row) => [row.account, row]));
 }

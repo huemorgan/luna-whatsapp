@@ -15,17 +15,22 @@ function opt(name, fallback) {
 
 export const config = {
   port: parseInt(opt('PORT', '10000'), 10),
-  // HMAC shared secret between gateway <-> Luna plugin.
-  sharedSecret: req('WA_SHARED_SECRET'),
-  // Protects the /qr linking page.
+  // Legacy single-account HMAC secret. Since 003 (multi-Luna) accounts live in
+  // the whatsapp_accounts registry with per-account secrets; this env var only
+  // seeds the `default` account on first boot and stays a verification
+  // fallback for it. Optional: a fresh multi-tenant deploy can run without it.
+  sharedSecret: opt('WA_SHARED_SECRET', ''),
+  // Protects the /qr page and the /accounts admin API.
   adminKey: req('GATEWAY_ADMIN_KEY'),
-  // Where inbound WhatsApp events are POSTed (the Luna plugin route).
-  // e.g. https://<tunnel>/api/p/plugin-whatsapp/inbound
+  // Legacy inbound target — seeds the `default` account's inbound_url.
   lunaInboundUrl: opt('LUNA_INBOUND_URL', ''),
   databaseUrl: req('DATABASE_URL'),
-  // Baileys auth dir — on Render this is the mounted persistent disk.
+  // Baileys auth root — on Render this is the mounted persistent disk. Each
+  // account keeps its session files in <authDir>/<account_id>/.
   authDir: opt('WA_AUTH_DIR', '/data/wa-auth'),
-  // Label for the linked account (multi-account is Phase 2; single for MVP).
+  // Which registry rows this instance owns (sharding hook; single instance now).
+  gatewayId: opt('GATEWAY_ID', 'gw-1'),
+  // Legacy name for the seeded account (kept for the env-seed path only).
   account: opt('WA_ACCOUNT', 'default'),
   // Ban-risk guard: max outbound messages per day.
   sendDailyCap: parseInt(opt('WA_SEND_DAILY_CAP', '300'), 10),
