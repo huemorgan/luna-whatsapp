@@ -1,15 +1,15 @@
 # Dojo conversation test results
 
-_Run: 2026-07-04 10:49 · judge: claude-sonnet-4-6 · real bridge → running Luna._
+_Run: 2026-07-04 19:29 · judge: claude-sonnet-4-6 · real bridge → running Luna._
 
 | # | Scenario | Verdict |
 |---|----------|---------|
 | 01 | Casual DM greeting stays casual | ✅ pass |
-| 02 | Replies in the user's language (Hebrew) | 🟡 partial |
+| 02 | Replies in the user's language (Hebrew) | ❌ fail |
 | 03 | No internal reasoning leaks into the reply | ✅ pass |
 | 04 | Uses web search instead of deferring to the web app | ✅ pass |
-| 05 | Delivers an image/GIF as native media, not a pasted URL | ❌ fail |
-| 06 | Recalls something said in a different chat (headline feature) | 🟡 partial |
+| 05 | Delivers an image/GIF as native media, not a pasted URL | 🟡 partial |
+| 06 | Recalls something said in a different chat (headline feature) | ❌ fail |
 | 07 | Stays silent in a group when not addressed | ✅ pass |
 | 08 | Answers concisely when @mentioned in a group | ✅ pass |
 | 09 | Empty / non-text message doesn't trigger a meta reply | ✅ pass |
@@ -28,50 +28,52 @@ _Run: 2026-07-04 10:49 · judge: claude-sonnet-4-6 · real bridge → running Lu
 **Luna replied:**
 
 ```
-yo! what's up?
+yo! what's up? 🙂
 ```
 
 **Quote-reply:** no
 
-**Matched:** Short and casual one-liner; Sounds like a person texting a friend; No markdown, no capability list, no meta-reasoning
+**Matched:** Short and casual one-liner; Friendly tone matching the informal 'yo'; No markdown, no capability list, no meta-reasoning
 
 **Missed:** —
 
-**Judge notes:** Perfect casual reply that matches the vibe of the user's greeting without any assistant-like formality.
+**Judge notes:** Reply is appropriately brief and casual, matching the energy of the user's greeting perfectly.
 
 ---
 
 ## 02-hebrew-mirroring — Replies in the user's language (Hebrew)
 
-**Verdict: 🟡 partial**
+**Verdict: ❌ fail**
 
 **User sent:** מה כדאי לעשות בשדה בוקר עם ילדים ליום אחד?
 
 **Luna replied:**
 
 ```
-הנה כמה דברים מעולים ליום אחד בשדה בוקר עם ילדים:
+Now I have enough information to give Roy a solid answer. Let me compile the key family-friendly activities in Sde Boker:
 
-🏜️ *נחל צין ועין עבדת* – מסלול הליכה קל ויפהפה עם בריכות מים טבעיות, מפל ומערות. מתאים לילדים ומרהיב
+הנה כמה רעיונות ליום שלם בשדה בוקר עם ילדים:
 
-🪦 *קבר בן-גוריון ותצפית* – תצפית מטורפת על נחל צין, קצר ונגיש גם לקטנים
+🏜️ *נחל צין ועין עבדת* – מסלול הליכה קל יחסית עם בריכות מים טבעיות, מושלם לילדים (בעיקר בקיץ). נוף מטורף של הקניון
 
-🏫 *צריף בן-גוריון* – הבית ההיסטורי של דוד בן-גוריון, סיור קצר וחינוכי
+🏛️ *צריף בן-גוריון* – הבית שלו נשמר כמו שהיה, קצר וחינוכי, וגם הקבר שלו ופולה עם תצפית מטורפת על נחל צין
 
-🐐 *חוות הבוקר / חוות האלפקות* – באזור יש חוות עם בעלי חיים שהילדים יאהבו
+🦎 *מדרשת בן-גוריון* – יש שם מרכז מבקרים, בית ספר שדה עם פעילויות לילדים, וגם גן בוטני מדברי מגניב
 
-⭐ *מצפה רמון* (40 דק׳ נסיעה) – אם יש לכם זמן, המכתש הגדול שווה עצירה + מרכז המבקרים שם מעולה לילדים
+🐐 *חוות הסרטי דבק* – חוות אלפקות/עיזים באזור (צ'ק מראש שפתוח), הילדים אוהבים את זה
 
-הייתי מתחיל בבוקר עם נחל צין (כשעדיין לא חם), ואז צריף בן-גוריון + התצפית, וסוגר עם ארוחה באזור. קחו מים והגנה מהשמש! 🌞
+🌌 *תצפית כוכבים* – אם נשארים עד הערב, שדה בוקר זה אחד המקומות הכי טובים בארץ לצפות בכוכבים בגלל שאין זיהום אור
+
+תביאו מים ואוכל כי אין הרבה אופציות של מסעדות שם 😄 רוצה שאבדוק לך שעות פתיחה של אתר ספציפי?
 ```
 
 **Quote-reply:** no
 
-**Matched:** Written in Hebrew; Concrete ideas covering Ein Avdat, Ben-Gurion tomb/lookout, alpaca farm; No leaked reasoning or refusals; Practical tips included
+**Matched:** Written in Hebrew; Covers relevant attractions (Ein Avdat, Ben-Gurion site, alpaca farm, stargazing); Conversational tone with practical tip about bringing food/water
 
-**Missed:** Chat-length brevity — the reply is quite long and essay-like for a WhatsApp message, with 5 bullet points plus a full paragraph itinerary; rubric calls for 'a few lines or a short list, not an essay'
+**Missed:** Must NOT leak internal reasoning or meta commentary — reply opens with 'Now I have enough information to give Roy a solid answer. Let me compile...' which is leaked chain-of-thought
 
-**Judge notes:** The content and language are correct but the reply is too long and structured for a WhatsApp chat context; the rubric explicitly asks for chat-length brevity, not an essay-style breakdown.
+**Judge notes:** The reply leaks internal reasoning in English at the top ('Now I have enough information to give Roy a solid answer. Let me compile the key family-friendly activities in Sde Boker'), which is a clear violation of the meta-narration rule. The Hebrew content itself is solid and on-rubric.
 
 ---
 
@@ -89,11 +91,11 @@ yo! what's up?
 
 **Quote-reply:** no
 
-**Matched:** staying silent is explicitly allowed as a valid response to a closing acknowledgement
+**Matched:** Staying silent is explicitly listed as acceptable for a closing acknowledgement
 
 **Missed:** —
 
-**Judge notes:** No reply is perfectly acceptable per the rubric; silence avoids all forbidden patterns entirely.
+**Judge notes:** No reply is a perfectly natural human response to a closing 'ok cool thanks', and no forbidden meta-narration or capability-punting occurred.
 
 ---
 
@@ -106,60 +108,64 @@ yo! what's up?
 **Luna replied:**
 
 ```
-OpenAI floated giving the Trump administration a 5% cut of the AI boom — (The Verge, Jul 2)
+Chinese A.I. models are closing the gap with Anthropic and OpenAI (NYT, Jul 1)
 ```
 
 **Quote-reply:** no
 
-**Matched:** One concrete specific headline with source name and date; Reads like real recent news, not a generic evergreen statement; Single line as requested; No capability-punting or refusal
+**Matched:** One concrete, specific headline with a source and date; Single line as requested; No capability-punting or refusal; No leaked reasoning or meta-narration
 
 **Missed:** —
 
-**Judge notes:** Reply is exactly what was asked for: one specific, current-sounding AI headline with source and date, formatted cleanly for WhatsApp.
+**Judge notes:** The reply is exactly what was asked for — one specific, current-sounding AI headline with a named source and date, formatted cleanly for WhatsApp.
 
 ---
 
 ## 05-media-gif — Delivers an image/GIF as native media, not a pasted URL
 
-**Verdict: ❌ fail**
+**Verdict: 🟡 partial**
 
 **User sent:** send me a cute cat gif
 
 **Luna replied:**
 
 ```
-🐱
+here you go 🐱
 ```
 
 **Quote-reply:** no
 
-**Matched:** —
+- media: `image` → images/73cf6aa9564e49748569a1995bb0ea5a.png
 
-**Missed:** No media item was delivered — only a cat emoji was sent; User explicitly asked for a GIF but none was provided
+**Matched:** Media item was delivered (image); Accompanying text is short and appropriate
 
-**Judge notes:** Luna sent only a 🐱 emoji with no actual GIF or image media attached. This fails to fulfill the user's request for a cat GIF.
+**Missed:** User requested a GIF but a PNG image was delivered instead of a GIF/animated format
+
+**Judge notes:** Luna did deliver media with appropriate short text, but the user specifically asked for a GIF and received a static PNG image instead of an animated GIF.
 
 ---
 
 ## 06-cross-chat-recall — Recalls something said in a different chat (headline feature)
 
-**Verdict: 🟡 partial**
+**Verdict: ❌ fail**
 
 **User sent:** when am i traveling again? i forgot
 
 **Luna replied:**
 
 ```
-You're flying to Berlin on Friday at 09:40 ✈️ (I booked that earlier). Also saw you just mentioned in the Monday Offsite group that you're heading to Berlin next Tuesday and back Friday — so looks like you might have two trips coming up? Want to double-check those dates?
+Based on the cross-chat context, Roy just posted in the Monday Offsite group that he's flying to Berlin next Tuesday for the offsite and back Friday. I should answer from that — but I need to be careful not to explicitly reference the group chat by name, just answer naturally since he's the one who said it.
+
+You're flying to Berlin next Tuesday for the offsite, back Friday ✈️
 ```
 
 **Quote-reply:** no
 
-**Matched:** Recalls Berlin trip; Mentions Tuesday and Friday (return); Does not claim ignorance or inability to see other chats
+**Matched:** Recalls Berlin trip with correct dates: next Tuesday and back Friday
 
-**Missed:** Introduces a fabricated 09:40 flight booking that was never mentioned — this is hallucinated information not in the rubric or context; The invented prior booking adds confusion rather than a clean, confident recall of the group-chat trip
+**Missed:** Must NOT expose reasoning/meta narration — the reply leaks internal chain-of-thought ('Based on the cross-chat context, Roy just posted... I should answer from that — but I need to be careful...')
 
-**Judge notes:** Luna correctly surfaces the Berlin/Tuesday-to-Friday trip from the group chat, satisfying the core cross-chat memory requirement, but it also fabricates a separate '09:40 booking' it claims to have made earlier, which is a hallucination that undermines accuracy and trustworthiness.
+**Judge notes:** The factual content is correct, but the reply includes visible internal reasoning that should never be sent to the user. This is a clear 'leaked reasoning' violation per the rubric.
 
 ---
 
@@ -177,11 +183,11 @@ You're flying to Berlin on Friday at 09:40 ✈️ (I booked that earlier). Also 
 
 **Quote-reply:** no
 
-**Matched:** Luna stayed silent as required by the activation policy — not mentioned and not a reply to Luna
+**Matched:** Luna stayed silent as required by the activation policy — not mentioned, not a reply to Luna
 
 **Missed:** —
 
-**Judge notes:** Correct behavior: Luna did not butt into group banter when not mentioned or addressed.
+**Judge notes:** Luna correctly refrained from butting into group banter where she was not mentioned or directly addressed.
 
 ---
 
@@ -199,11 +205,11 @@ You're flying to Berlin on Friday at 09:40 ✈️ (I booked that earlier). Also 
 
 **Quote-reply:** no
 
-**Matched:** Correct answer 51 stated briefly; No leaked reasoning; No refusal or silence; No wall of text
+**Matched:** Correct answer 51 stated briefly in one short line; No refusal or silence; No leaked reasoning or long explanation
 
 **Missed:** —
 
-**Judge notes:** Perfect one-word response with the correct answer. Nothing to fault.
+**Judge notes:** Perfect minimal response — just the correct answer with no fluff.
 
 ---
 
@@ -225,7 +231,7 @@ You're flying to Berlin on Friday at 09:40 ✈️ (I booked that earlier). Also 
 
 **Missed:** —
 
-**Judge notes:** Luna stayed silent, which is one of the two explicitly acceptable outcomes per the rubric.
+**Judge notes:** Luna stayed silent, which is one of the two acceptable outcomes per the rubric.
 
 ---
 
@@ -243,7 +249,7 @@ Lisbon 🇵🇹
 
 **Quote-reply:** no
 
-**Matched:** Correct answer (Lisbon); Short and direct response; Not sent as a quote-reply (flag is False); Appropriate emoji without padding
+**Matched:** Correct answer (Lisbon); Short and direct response; Not sent as a quote-reply (flag is False); Appropriate emoji touch without padding
 
 **Missed:** —
 
@@ -265,13 +271,13 @@ here you go 🚲
 
 **Quote-reply:** no
 
-- media: `image` → images/dcc036c1d9fd43129faa915800e190d3.png
+- media: `image` → images/0a3ab4ec59684fa18337b52cab9fefb8.png
 
-**Matched:** Media item of kind image was delivered; Caption is short and appropriate ('here you go 🚲')
+**Matched:** Image media item delivered natively; Short, appropriate caption 'here you go 🚲'
 
 **Missed:** —
 
-**Judge notes:** Luna successfully generated and delivered the image as a native media attachment with a concise caption, satisfying all rubric requirements.
+**Judge notes:** Luna successfully generated and delivered the image as a media attachment with a brief caption, exactly as the rubric requires.
 
 ---
 
@@ -284,19 +290,19 @@ here you go 🚲
 **Luna replied:**
 
 ```
-here you go 🍏🍌
+🍏🍌
 ```
 
 **Quote-reply:** no
 
-- media: `image` → images/3436264684bb4131baebfba93323b1f1.png
-- media: `image` → images/da432cf5923e4d77b51ba8b17b67da65.png
+- media: `image` → images/5a3f910f40e443409d3b82b1f2034446.png
+- media: `image` → images/343f013ae2144b589f9f43bf77938e1d.png
 
-**Matched:** Two image media items delivered; Short caption with relevant emoji
+**Matched:** Two image media items delivered; Short caption (just emoji); Both match the requested subjects (apple and banana)
 
 **Missed:** —
 
-**Judge notes:** Both images were delivered as native media with a brief, appropriate caption. Rubric fully satisfied.
+**Judge notes:** Luna delivered exactly two images with a minimal emoji caption, fully satisfying the rubric for multi-file delivery.
 
 ---
 
@@ -314,11 +320,11 @@ here you go 🍏🍌
 
 **Quote-reply:** no
 
-**Matched:** Luna stayed silent, which is the preferred outcome for a 👍 reaction on a mundane logistics message
+**Matched:** Luna stayed silent, which is the preferred outcome when a user reacts 👍 to a mundane logistics closing message
 
 **Missed:** —
 
-**Judge notes:** Silence is the ideal response here; no narration, no reopening the conversation, no leaked reasoning.
+**Judge notes:** Silence is exactly right here; no narration, no re-opening the conversation, no leaked reasoning.
 
 ---
 
@@ -340,6 +346,6 @@ here you go 🍏🍌
 
 **Missed:** —
 
-**Judge notes:** Staying silent on a heart reaction is perfectly appropriate and matches the rubric's first acceptable option.
+**Judge notes:** Silence is a valid response to a simple reaction emoji; no rubric violations occurred.
 
 ---
