@@ -91,18 +91,23 @@ async function renderQrHtml(res, session, accountId) {
     } catch {}
   }
   const linked = conn.connected;
+  // WhatsApp dark-mode palette (bg #0b141a, card #202c33, green #00a884) so
+  // the page looks native both standalone and embedded in the plugin's
+  // settings iframe.
   res.set('content-type', 'text/html').send(`<!doctype html>
 <html><head><meta charset="utf-8"><title>Link WhatsApp — Luna</title>
 <meta http-equiv="refresh" content="5">
 <style>
-  body{font-family:-apple-system,sans-serif;background:#0f0f1e;color:#e0e0e0;
+  body{font-family:-apple-system,sans-serif;background:#0b141a;color:#e9edef;
        display:flex;flex-direction:column;align-items:center;justify-content:center;
        min-height:100vh;margin:0;text-align:center;padding:24px}
-  .card{background:#1a1a2e;border-radius:16px;padding:32px;max-width:420px}
+  .card{background:#202c33;border:1px solid #2a3942;border-radius:16px;padding:32px;max-width:420px}
   img{border-radius:12px;background:#fff;padding:12px}
-  .ok{color:#4ade80;font-size:20px;font-weight:600}
-  code{background:#2a2a3e;padding:2px 6px;border-radius:6px}
-  .status{opacity:.6;font-size:13px;margin-top:16px}
+  .ok{color:#00a884;font-size:20px;font-weight:600}
+  p{color:#8696a0}
+  b{color:#e9edef}
+  code{background:#111b21;padding:2px 6px;border-radius:6px;color:#e9edef}
+  .status{color:#8696a0;font-size:13px;margin-top:16px}
 </style></head><body><div class="card">
   <h2>Link WhatsApp to Luna</h2>
   <p class="status">account: <code>${accountId}</code></p>
