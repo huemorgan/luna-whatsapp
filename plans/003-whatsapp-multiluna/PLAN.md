@@ -218,12 +218,16 @@ secret→account resolution it works **unmodified**. Still worth a **v0.6.0**:
 
 1. **Fix version drift** (flagged by luna-service): `pyproject.toml` says
    `0.4.0` while `luna-plugin.toml` says `0.5.0`. Align both at `0.6.0`.
-2. **Send `x-wa-account` when configured**: new optional env/vault key
-   `LUNA_WHATSAPP_ACCOUNT_ID` (luna-service will inject agent slug). When
-   set, `client.py` adds the header to `/send`, `/send-media`, `/react` —
-   O(1) account resolution and a hard bind of this Luna to its account (a
-   mis-pasted foreign secret then 401s instead of silently sending through
-   the wrong number).
+2. **Send `x-wa-account` when configured**: new optional account id,
+   resolved **vault-first** (`plugin_whatsapp.account_id`) then env
+   (`LUNA_WHATSAPP_ACCOUNT_ID`) — same resolution pattern as the secret.
+   Vault-first matters to luna-service: they deliver both values over the
+   trusted-proxy vault write at connect time, so plugin install stays
+   restart-free (their `update_machine_env` recreates the Fly machine; vault
+   writes don't). When set, `client.py` adds the header to `/send`,
+   `/send-media`, `/react` — O(1) account resolution and a hard bind of this
+   Luna to its account (a mis-pasted foreign secret then 401s instead of
+   silently sending through the wrong number).
 3. **Settings/status honesty**: `wa_status` + settings tab currently read
    global `/health`; when `LUNA_WHATSAPP_ACCOUNT_ID` is set and the admin key
    is absent (hosted tenants never get it), show "managed by your host"
