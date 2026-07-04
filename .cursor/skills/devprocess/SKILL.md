@@ -30,6 +30,7 @@ boundary is a change to BOTH ends in the same commit** (and to `vision/contract.
 2. Pick **next** `NNN` (e.g. if `002-*` exists, use `003`).
 3. Use the **same** `NNN` and slug everywhere:
    - `plans/NNN-short-slug/PLAN.md`
+   - `plans/NNN-short-slug/execution-summary.md` (written at close — Phase 5)
    - `tests/NNN-short-slug/` (specs + `report.md`)
 
 Slug: lowercase, hyphenated, short (`group-debounce`, not `GroupDebounce`).
@@ -253,6 +254,36 @@ the gateway changed, bump `gateway/package.json` instead.
 A plan with `Produces version: 0.M.P` that ships without bumping the version is **not**
 done. Docs-only plans (`Produces version: none`) skip this step.
 
+### Execution summary (mandatory — every executed plan)
+
+After executing the plan (pass OR blocked), write
+`plans/NNN-short-slug/execution-summary.md`. This is distinct from
+`tests/NNN-slug/report.md`: the report is test evidence for THIS run; the
+summary is the durable narrative the next agent/human reads alongside PLAN.md.
+
+```markdown
+# NNN — Human Title — Execution Summary
+
+**Executed:** YYYY-MM-DD · **Outcome:** shipped | partially shipped | blocked
+**Deployed:** where/commit (or "not deployed")
+
+## What was accomplished
+What actually shipped, vs. the plan's goals. Note any goals dropped or
+deferred, and any amendments made to PLAN.md along the way.
+
+## What we discovered along the way
+Non-obvious findings that were NOT in the plan: bugs found (in ours or in
+dependencies), wrong assumptions, environment quirks, design decisions made
+mid-flight and why. If it surprised you, it goes here.
+
+## Things to consider in the future
+Follow-ups, hardening items, deliberate shortcuts and their expiry
+conditions, capacity/scale limits observed, ideas rejected but worth
+revisiting. Anything a future plan should pick up.
+```
+
+A plan folder without `execution-summary.md` after execution is **not** done.
+
 ## Project adapters (read when present)
 
 | Path | Use |
@@ -278,6 +309,8 @@ done. Docs-only plans (`Produces version: none`) skip this step.
 - Dropping/rewriting captured messages instead of additive, idempotent handling
 - Plan ships with `## Architecture impact: ADD` but the vision doc is unchanged
 - Plan declares a `Produces version` but the two plugin manifests weren't bumped/kept in sync
+- Execution finished but `plans/NNN-slug/execution-summary.md` was never written
+  (or written as a bare changelog with no discoveries / future considerations)
 
 ## Quick checklist
 
@@ -293,5 +326,6 @@ done. Docs-only plans (`Produces version: none`) skip this step.
 - [ ] tests/NNN-slug/report.md complete with real results
 - [ ] vision/*.md updated for every ADD / CONFLICT change
 - [ ] Version bumped in BOTH plugin manifests (or gateway/package.json)
+- [ ] plans/NNN-slug/execution-summary.md written (accomplished / discovered / future)
 - [ ] Acceptance criteria checked off
 ```
