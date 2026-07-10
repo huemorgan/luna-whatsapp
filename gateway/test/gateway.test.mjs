@@ -9,8 +9,10 @@ process.env.GATEWAY_ADMIN_KEY ||= 'unit-test-admin';
 process.env.DATABASE_URL ||= 'postgres://localhost/none';
 
 const { sign, verify } = await import('../src/hmac.js');
-const { buildMediaContent, toMediaUpload, parseReaction, Session } =
-  await import('../src/session.js');
+const {
+  buildMediaContent, toMediaUpload, parseReaction, Session,
+  normalizeTarget, shapeGroupMeta, digitsOf,
+} = await import('../src/session.js');
 const { resolveAccountId, validAccountId } = await import('../src/accounts.js');
 
 // A Session with no socket: presence is a safe no-op, which is exactly what
@@ -376,6 +378,130 @@ test('Session: sends refuse when the socket is not open', async () => {
   const s = new Session({ account_id: 'a', secret: 's' });
   await assert.rejects(() => s.sendText('x@s.whatsapp.net', 'hi'), /not connected/);
   await assert.rejects(() => s.react('x@s.whatsapp.net', 'ID', '❤️'), /not connected/);
+});
+
+// ---------------------------------------------------------------------------
+// 005 full control: target normalization + resolution + group ops
+// ---------------------------------------------------------------------------
+
+test('digitsOf strips everything but digits', () => {
+  assert.equal(digitsOf('+1 (555) 000-1111'), '15550001111');
+  assert.equal(digitsOf(null), '');
+});
+
+test('normalizeTarget: group/lid/newsletter/broadcast JIDs pass through', () => {
+  for (const jid of ['120363@g.us', '123@lid', '99@newsletter', 'x@broadcast']) {
+    assert.deepEqual(normalizeTarget(jid), { jid });
+  }
+});
+
+test('normalizeTarget: phone JID is canonicalized (device suffix + junk stripped)', () => {
+  assert.deepEqual(
+    normalizeTarget('15550001111:22@s.whatsapp.net'),
+    { jid: '15550001111@s.whatsapp.net' },
+  );
+});
+
+test('normalizeTarget: bare numbers in human formats become { number }', () => {
+  assert.deepEqual(normalizeTarget('+1 555-000-1111'), { number: '15550001111' });
+  assert.deepEqual(normalizeTarget('15550001111'), { number: '15550001111' });
+});
+
+test('normalizeTarget: garbage is rejected', () => {
+  for (const bad of ['', '   ', 'nadav', '123', 'x@unknown.domain', '1'.repeat(25), null]) {
+    assert.equal(normalizeTarget(bad), null, String(bad));
+  }
+});
+
+test('resolveJid: invalid target throws 400 with guidance', async () => {
+  const s = new Session({ account_id: 'a', secret: 's' });
+  await assert.rejects(() => s.resolveJid('not a target'), (e) => e.status === 400);
+});
+
+test('resolveJid: formed JIDs resolve without a socket', async () => {
+  const s = new Session({ account_id: 'a', secret: 's' });
+  assert.equal(await s.resolveJid('120363@g.us'), '120363@g.us');
+  assert.equal(
+    await s.resolveJid('15550001111:3@s.whatsapp.net'), '15550001111@s.whatsapp.net',
+  );
+});
+
+test('resolveJid: bare number without socket → dry mode constructs, live mode refuses', async () => {
+  const s = new Session({ account_id: 'a', secret: 's' });
+  await assert.rejects(() => s.resolveJid('+1 555 000 1111'), /not connected/);
+  process.env.WA_DRY_SEND = '1';
+  try {
+    assert.equal(await s.resolveJid('+1 555 000 1111'), '15550001111@s.whatsapp.net');
+  } finally {
+    delete process.env.WA_DRY_SEND;
+  }
+});
+
+test('resolveJid: onWhatsApp verifies numbers — hit resolves, miss 404s', async () => {
+  const s = new Session({ account_id: 'a', secret: 's' });
+  s.status = 'open';
+  s.sock = { onWhatsApp: async () => [{ jid: '15550001111@s.whatsapp.net', exists: true }] };
+  assert.equal(await s.resolveJid('15550001111'), '15550001111@s.whatsapp.net');
+  s.sock = { onWhatsApp: async () => [] };
+  await assert.rejects(() => s.resolveJid('15550009999'),
+    (e) => e.status === 404 && /not on WhatsApp/.test(e.message));
+});
+
+test('resolveJid: a transient onWhatsApp failure falls back to the constructed JID', async () => {
+  const s = new Session({ account_id: 'a', secret: 's' });
+  s.status = 'open';
+  s.sock = { onWhatsApp: async () => { throw new Error('timed out'); } };
+  assert.equal(await s.resolveJid('15550001111'), '15550001111@s.whatsapp.net');
+});
+
+test('shapeGroupMeta: shapes participants and detects our admin bit', () => {
+  const meta = {
+    id: '120363@g.us', subject: 'Family', desc: 'the fam', owner: '15550001111@s.whatsapp.net',
+    creation: 1700000000, announce: false,
+    participants: [
+      { id: '15550001111:9@s.whatsapp.net', admin: 'superadmin' },
+      { id: '15550002222@s.whatsapp.net', admin: null },
+    ],
+  };
+  const g = shapeGroupMeta(meta, '15550001111');
+  assert.equal(g.jid, '120363@g.us');
+  assert.equal(g.subject, 'Family');
+  assert.equal(g.participants_count, 2);
+  assert.equal(g.me_admin, true);
+  assert.equal(g.created_at, new Date(1700000000 * 1000).toISOString());
+  // not admin → me_admin false
+  assert.equal(shapeGroupMeta(meta, '15550002222').me_admin, false);
+});
+
+test('groupParticipants: rejects a bad action; dry mode fakes per-target results', async () => {
+  const s = new Session({ account_id: 'a', secret: 's' });
+  await assert.rejects(() => s.groupParticipants('1@g.us', 'ban', ['15550001111']),
+    (e) => e.status === 400);
+  process.env.WA_DRY_SEND = '1';
+  try {
+    const r = await s.groupParticipants('1@g.us', 'add', ['+1 555 000 1111']);
+    assert.deepEqual(r.results, [{ jid: '15550001111@s.whatsapp.net', status: '200' }]);
+  } finally {
+    delete process.env.WA_DRY_SEND;
+  }
+});
+
+test('group ops refuse when socket not open (no dry mode)', async () => {
+  const s = new Session({ account_id: 'a', secret: 's' });
+  await assert.rejects(() => s.listGroups(), /not connected/);
+  await assert.rejects(() => s.groupInfo('1@g.us'), /not connected/);
+  await assert.rejects(() => s.groupRename('1@g.us', 'x'), /not connected/);
+  await assert.rejects(() => s.groupLeave('1@g.us'), /not connected/);
+  await assert.rejects(() => s.groupInvite('1@g.us'), /not connected/);
+});
+
+test('groupRename busts the cached subject', async () => {
+  const s = new Session({ account_id: 'a', secret: 's' });
+  s.status = 'open';
+  s.sock = { groupUpdateSubject: async () => {} };
+  s.groupNameCache.set('1@g.us', { name: 'Old', at: Date.now() });
+  await s.groupRename('1@g.us', 'New');
+  assert.equal(s.groupNameCache.has('1@g.us'), false);
 });
 
 test('Session: stop clears watchdog and blocks reconnects', async () => {

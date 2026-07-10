@@ -272,6 +272,18 @@ app.get('/stats', async (req, res) => {
 // signed send/react (per-account)
 // ---------------------------------------------------------------------------
 
+// Resolution failures carry their own status (400 invalid target, 404 not on
+// WhatsApp); anything else is the socket's fault → 502.
+function sendErr(res, e) {
+  res.status(e.status || 502).json({ ok: false, error: e.message, ...(e.code ? { code: e.code } : {}) });
+}
+
+function requireGroupJid(res, jid) {
+  if (typeof jid === 'string' && jid.endsWith('@g.us')) return true;
+  res.status(400).json({ ok: false, error: 'group_jid required (…@g.us)' });
+  return false;
+}
+
 app.post('/send', async (req, res) => {
   const session = requireAccount(req, res);
   if (!session) return;
@@ -280,10 +292,11 @@ app.post('/send', async (req, res) => {
     return res.status(400).json({ error: 'chat_jid and text required' });
   }
   try {
-    const result = await session.sendText(chat_jid, text, reply_to);
-    res.json({ ok: true, account: session.accountId, ...result });
+    const jid = await session.resolveJid(chat_jid);
+    const result = await session.sendText(jid, text, reply_to);
+    res.json({ ok: true, account: session.accountId, chat_jid: jid, ...result });
   } catch (e) {
-    res.status(502).json({ ok: false, error: e.message });
+    sendErr(res, e);
   }
 });
 
@@ -313,13 +326,14 @@ app.post('/send-media', async (req, res) => {
       // A local path — hand straight to Baileys' url loader.
       source = url;
     }
-    const result = await session.sendMedia(chat_jid, kind, source, {
+    const jid = await session.resolveJid(chat_jid);
+    const result = await session.sendMedia(jid, kind, source, {
       caption, mimetype, fileName: file_name, replyToWaId: reply_to,
       ptt, gifPlayback: gif_playback, ptv,
     });
-    res.json({ ok: true, account: session.accountId, ...result });
+    res.json({ ok: true, account: session.accountId, chat_jid: jid, ...result });
   } catch (e) {
-    res.status(502).json({ ok: false, error: e.message });
+    sendErr(res, e);
   }
 });
 
@@ -331,10 +345,126 @@ app.post('/react', async (req, res) => {
     return res.status(400).json({ error: 'chat_jid, wa_msg_id, emoji required' });
   }
   try {
-    const result = await session.react(chat_jid, wa_msg_id, emoji);
+    const jid = await session.resolveJid(chat_jid);
+    const result = await session.react(jid, wa_msg_id, emoji);
     res.json({ account: session.accountId, ...result });
   } catch (e) {
-    res.status(502).json({ ok: false, error: e.message });
+    sendErr(res, e);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// signed resolve + group management (per-account)
+// All POST so the HMAC covers the JSON body uniformly.
+// ---------------------------------------------------------------------------
+
+// Resolve a phone number / loose JID to a canonical WhatsApp JID (verifies
+// registration via onWhatsApp for bare numbers).
+app.post('/resolve', async (req, res) => {
+  const session = requireAccount(req, res);
+  if (!session) return;
+  const { target } = req.body || {};
+  if (!target) return res.status(400).json({ error: 'target required' });
+  try {
+    const jid = await session.resolveJid(target);
+    res.json({ ok: true, jid, kind: jid.endsWith('@g.us') ? 'group' : 'dm' });
+  } catch (e) {
+    sendErr(res, e);
+  }
+});
+
+app.post('/groups/list', async (req, res) => {
+  const session = requireAccount(req, res);
+  if (!session) return;
+  try {
+    res.json({ ok: true, groups: await session.listGroups() });
+  } catch (e) {
+    sendErr(res, e);
+  }
+});
+
+app.post('/groups/info', async (req, res) => {
+  const session = requireAccount(req, res);
+  if (!session) return;
+  const { group_jid } = req.body || {};
+  if (!requireGroupJid(res, group_jid)) return;
+  try {
+    res.json({ ok: true, group: await session.groupInfo(group_jid) });
+  } catch (e) {
+    sendErr(res, e);
+  }
+});
+
+app.post('/groups/subject', async (req, res) => {
+  const session = requireAccount(req, res);
+  if (!session) return;
+  const { group_jid, subject } = req.body || {};
+  if (!requireGroupJid(res, group_jid)) return;
+  if (!subject || typeof subject !== 'string') {
+    return res.status(400).json({ ok: false, error: 'subject required' });
+  }
+  try {
+    const result = await session.groupRename(group_jid, subject);
+    res.json({ ok: true, account: session.accountId, ...result });
+  } catch (e) {
+    sendErr(res, e);
+  }
+});
+
+app.post('/groups/participants', async (req, res) => {
+  const session = requireAccount(req, res);
+  if (!session) return;
+  const { group_jid, action, participants } = req.body || {};
+  if (!requireGroupJid(res, group_jid)) return;
+  if (!Array.isArray(participants) || participants.length === 0) {
+    return res.status(400).json({ ok: false, error: 'participants (non-empty array) required' });
+  }
+  try {
+    const result = await session.groupParticipants(group_jid, action, participants);
+    res.json({ ok: true, account: session.accountId, action, ...result });
+  } catch (e) {
+    sendErr(res, e);
+  }
+});
+
+app.post('/groups/create', async (req, res) => {
+  const session = requireAccount(req, res);
+  if (!session) return;
+  const { subject, participants } = req.body || {};
+  if (!subject || typeof subject !== 'string') {
+    return res.status(400).json({ ok: false, error: 'subject required' });
+  }
+  try {
+    const group = await session.groupCreate(subject, participants || []);
+    res.json({ ok: true, account: session.accountId, group });
+  } catch (e) {
+    sendErr(res, e);
+  }
+});
+
+app.post('/groups/leave', async (req, res) => {
+  const session = requireAccount(req, res);
+  if (!session) return;
+  const { group_jid } = req.body || {};
+  if (!requireGroupJid(res, group_jid)) return;
+  try {
+    const result = await session.groupLeave(group_jid);
+    res.json({ ok: true, account: session.accountId, ...result });
+  } catch (e) {
+    sendErr(res, e);
+  }
+});
+
+app.post('/groups/invite', async (req, res) => {
+  const session = requireAccount(req, res);
+  if (!session) return;
+  const { group_jid } = req.body || {};
+  if (!requireGroupJid(res, group_jid)) return;
+  try {
+    const result = await session.groupInvite(group_jid);
+    res.json({ ok: true, account: session.accountId, ...result });
+  } catch (e) {
+    sendErr(res, e);
   }
 });
 

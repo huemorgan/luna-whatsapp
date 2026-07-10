@@ -35,9 +35,25 @@ differ and every signature will fail. Always verify against the raw body.
 |---|---|---|---|---|
 | GET | `/health` | none | – | `{status, connected, self_jid, has_qr, last_activity_at, sent_today}` |
 | GET | `/qr?key=<GATEWAY_ADMIN_KEY>` | admin key | – | HTML QR page (auto-refreshes; shows "linked" once connected) |
-| POST | `/send` | HMAC | `{chat_jid, text, reply_to?}` | `{ok, wa_msg_id}` |
-| POST | `/send-media` | HMAC | `{chat_jid, kind, url?\|data_base64?, caption?, mimetype?, file_name?, reply_to?, gif_playback?, ptt?, ptv?}` | `{ok, wa_msg_id}` |
+| POST | `/send` | HMAC | `{chat_jid, text, reply_to?}` | `{ok, chat_jid, wa_msg_id}` |
+| POST | `/send-media` | HMAC | `{chat_jid, kind, url?\|data_base64?, caption?, mimetype?, file_name?, reply_to?, gif_playback?, ptt?, ptv?}` | `{ok, chat_jid, wa_msg_id}` |
 | POST | `/react` | HMAC | `{chat_jid, wa_msg_id, emoji}` | `{ok}` |
+| POST | `/resolve` | HMAC | `{target}` | `{ok, jid, kind}` — 400 invalid, 404 `not_on_whatsapp` |
+| POST | `/groups/list` | HMAC | `{}` | `{ok, groups: [{jid, subject, participants_count, owner, announce}]}` |
+| POST | `/groups/info` | HMAC | `{group_jid}` | `{ok, group: {jid, subject, description, owner, created_at, announce, participants_count, participants: [{jid, admin}], me_admin}}` |
+| POST | `/groups/subject` | HMAC | `{group_jid, subject}` | `{ok}` |
+| POST | `/groups/participants` | HMAC | `{group_jid, action: add\|remove\|promote\|demote, participants: [target…]}` | `{ok, results: [{jid, status}]}` ('200' ok, '403' not allowed, '408' recently left) |
+| POST | `/groups/create` | HMAC | `{subject, participants?}` | `{ok, group}` (same shape as `/groups/info`) |
+| POST | `/groups/leave` | HMAC | `{group_jid}` | `{ok}` |
+| POST | `/groups/invite` | HMAC | `{group_jid}` | `{ok, code, url}` |
+
+**Target resolution** (`/send`, `/send-media`, `/react` `chat_jid`; `/resolve`
+`target`; every `participants` entry): the gateway accepts a full JID
+(`…@g.us`/`…@lid`/… pass through; phone JIDs are canonicalized — device suffix
+stripped), or a phone number in any human format (digits are extracted and
+verified with `onWhatsApp`; unregistered numbers → 404 `not_on_whatsapp`).
+Success responses echo the canonical `chat_jid` actually used. Group endpoints
+require a literal `…@g.us` JID.
 
 ### Plugin (called by the gateway)
 

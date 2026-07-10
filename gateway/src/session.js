@@ -35,6 +35,55 @@ export function normalizeNumber(jid) {
   return jid.split(':')[0].split('@')[0];
 }
 
+export function digitsOf(value) {
+  return String(value ?? '').replace(/[^0-9]/g, '');
+}
+
+// Classify a loose send target without a socket. The plugin (and the agent
+// behind it) may pass a full JID, a phone number in any human format
+// ("+972 54-123-4567"), or garbage. Returns:
+//   { jid }    — already a sendable JID (groups/lid pass through; phone JIDs
+//                are canonicalized: device suffix and non-digits stripped)
+//   { number } — looks like a phone number; needs an onWhatsApp resolution
+//   null       — not a valid target
+export function normalizeTarget(input) {
+  const s = String(input ?? '').trim();
+  if (!s) return null;
+  if (/@(g\.us|lid|newsletter|broadcast)$/.test(s)) return { jid: s };
+  if (s.endsWith('@s.whatsapp.net')) {
+    const digits = digitsOf(normalizeNumber(s));
+    return digits.length >= 5 ? { jid: `${digits}@s.whatsapp.net` } : null;
+  }
+  if (s.includes('@')) return null; // unknown JID domain — refuse loudly
+  const digits = digitsOf(s);
+  return digits.length >= 5 && digits.length <= 20 ? { number: digits } : null;
+}
+
+// Shape Baileys group metadata into the wire form the plugin exposes to the
+// agent. Pure (no socket) so it stays unit-testable.
+export function shapeGroupMeta(meta, selfNumber) {
+  const participants = (meta?.participants || []).map((p) => ({
+    jid: p.id,
+    admin: p.admin || null,
+  }));
+  const meAdmin = participants.some(
+    (p) => selfNumber && normalizeNumber(p.jid) === selfNumber && p.admin,
+  );
+  return {
+    jid: meta?.id ?? null,
+    subject: meta?.subject || null,
+    description: meta?.desc || null,
+    owner: meta?.owner || null,
+    created_at: meta?.creation ? new Date(Number(meta.creation) * 1000).toISOString() : null,
+    announce: !!meta?.announce,
+    participants_count: participants.length,
+    participants,
+    me_admin: meAdmin,
+  };
+}
+
+export const GROUP_PARTICIPANT_ACTIONS = ['add', 'remove', 'promote', 'demote'];
+
 export function extractContent(message) {
   const m = message.message;
   if (!m) return { kind: 'system', body: null };
@@ -527,5 +576,139 @@ export class Session {
       react: { text: emoji, key: { remoteJid: chatJid, id: waMsgId } },
     });
     return { ok: true };
+  }
+
+  // -------------------------------------------------------------------------
+  // target resolution + group management
+  // -------------------------------------------------------------------------
+
+  _isLive() {
+    return !!this.sock && this.status === 'open';
+  }
+
+  _requireSock() {
+    if (!this._isLive()) throw new Error('WhatsApp socket not connected');
+  }
+
+  // Resolve a loose target (JID | phone number in any human format) to a
+  // canonical sendable JID. Numbers are verified with onWhatsApp so a typo'd
+  // or unregistered number fails loudly here (404) instead of vanishing
+  // inside Baileys.
+  async resolveJid(input) {
+    const t = normalizeTarget(input);
+    if (!t) {
+      throw Object.assign(
+        new Error(`invalid target: ${JSON.stringify(String(input ?? ''))} — pass a JID, a phone number, or a group JID (…@g.us)`),
+        { status: 400 },
+      );
+    }
+    if (t.jid) return t.jid;
+    const fallback = `${t.number}@s.whatsapp.net`;
+    if (!this._isLive()) {
+      if (process.env.WA_DRY_SEND === '1') return fallback;
+      throw new Error('WhatsApp socket not connected');
+    }
+    try {
+      const res = await this.sock.onWhatsApp(t.number);
+      const hit = (res || []).find((r) => r?.jid && r?.exists !== false);
+      if (!hit) {
+        throw Object.assign(
+          new Error(`${t.number} is not on WhatsApp`), { status: 404, code: 'not_on_whatsapp' },
+        );
+      }
+      return hit.jid;
+    } catch (e) {
+      if (e.status) throw e;
+      // onWhatsApp is best-effort — a transient query failure must not block
+      // a well-formed number.
+      console.error('[wa:%s] onWhatsApp lookup failed:', this.accountId, e.message);
+      return fallback;
+    }
+  }
+
+  async listGroups() {
+    if (!this._isLive()) {
+      if (process.env.WA_DRY_SEND === '1') return [];
+      throw new Error('WhatsApp socket not connected');
+    }
+    const all = await this.sock.groupFetchAllParticipating();
+    return Object.values(all || {}).map((g) => ({
+      jid: g.id,
+      subject: g.subject || null,
+      participants_count: (g.participants || []).length,
+      owner: g.owner || null,
+      announce: !!g.announce,
+    }));
+  }
+
+  async groupInfo(groupJid) {
+    if (!this._isLive() && process.env.WA_DRY_SEND === '1') {
+      return shapeGroupMeta({ id: groupJid, subject: 'dry group' }, this.selfNumber);
+    }
+    this._requireSock();
+    const meta = await this.sock.groupMetadata(groupJid);
+    return shapeGroupMeta(meta, this.selfNumber);
+  }
+
+  async groupRename(groupJid, subject) {
+    if (!this._isLive() && process.env.WA_DRY_SEND === '1') {
+      return { ok: true, dry: true };
+    }
+    this._requireSock();
+    await this.sock.groupUpdateSubject(groupJid, subject);
+    this.groupNameCache.delete(groupJid); // subject changed — bust the cache now
+    return { ok: true };
+  }
+
+  // action: add | remove | promote | demote. Targets may be numbers or JIDs.
+  async groupParticipants(groupJid, action, targets) {
+    if (!GROUP_PARTICIPANT_ACTIONS.includes(action)) {
+      throw Object.assign(
+        new Error(`action must be one of ${GROUP_PARTICIPANT_ACTIONS.join('|')}`), { status: 400 },
+      );
+    }
+    const jids = [];
+    for (const t of targets) jids.push(await this.resolveJid(t));
+    if (!this._isLive() && process.env.WA_DRY_SEND === '1') {
+      return { results: jids.map((jid) => ({ jid, status: '200' })), dry: true };
+    }
+    this._requireSock();
+    const res = await this.sock.groupParticipantsUpdate(groupJid, jids, action);
+    // Baileys returns per-participant status strings ('200' ok, '403' not
+    // allowed, '408' recently left, …) — surface them instead of flattening.
+    return { results: (res || []).map((r) => ({ jid: r.jid, status: String(r.status ?? '') })) };
+  }
+
+  async groupCreate(subject, targets) {
+    const jids = [];
+    for (const t of targets || []) jids.push(await this.resolveJid(t));
+    if (!this._isLive() && process.env.WA_DRY_SEND === '1') {
+      return shapeGroupMeta(
+        { id: `DRY-${subject}@g.us`, subject, participants: jids.map((j) => ({ id: j })) },
+        this.selfNumber,
+      );
+    }
+    this._requireSock();
+    const meta = await this.sock.groupCreate(subject, jids);
+    return shapeGroupMeta(meta, this.selfNumber);
+  }
+
+  async groupLeave(groupJid) {
+    if (!this._isLive() && process.env.WA_DRY_SEND === '1') {
+      return { ok: true, dry: true };
+    }
+    this._requireSock();
+    await this.sock.groupLeave(groupJid);
+    this.groupNameCache.delete(groupJid);
+    return { ok: true };
+  }
+
+  async groupInvite(groupJid) {
+    if (!this._isLive() && process.env.WA_DRY_SEND === '1') {
+      return { code: 'DRYINVITE', url: 'https://chat.whatsapp.com/DRYINVITE', dry: true };
+    }
+    this._requireSock();
+    const code = await this.sock.groupInviteCode(groupJid);
+    return { code, url: `https://chat.whatsapp.com/${code}` };
   }
 }
