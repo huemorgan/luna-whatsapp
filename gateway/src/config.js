@@ -34,6 +34,24 @@ export const config = {
   account: opt('WA_ACCOUNT', 'default'),
   // Ban-risk guard: max outbound messages per day.
   sendDailyCap: parseInt(opt('WA_SEND_DAILY_CAP', '300'), 10),
+  // 006 anti-ban send discipline. WA_OUTBOX=0 is the escape hatch back to
+  // direct (unpaced) sends.
+  outboxEnabled: opt('WA_OUTBOX', '1') === '1',
+  // Hold the HTTP request and answer synchronously when the queue can deliver
+  // within this window (keeps single conversational sends feeling instant).
+  syncWaitMs: parseInt(opt('WA_SYNC_WAIT_MS', '10000'), 10),
+  // Randomized gap between ANY two sends, by recipient class ("lo-hi" ms).
+  gapConversationalMs: opt('WA_GAP_CONV_MS', '1500-4000'),
+  gapWarmMs: opt('WA_GAP_WARM_MS', '8000-25000'),
+  gapColdMs: opt('WA_GAP_COLD_MS', '90000-240000'),
+  // Cold contacts (never messaged us) are the enforcement trigger — budget them.
+  coldDailyCap: parseInt(opt('WA_COLD_DAILY_CAP', '6'), 10),
+  coldHourlyCap: parseInt(opt('WA_COLD_HOURLY_CAP', '2'), 10),
+  // Circuit breaker after a restriction signal (463 / device_removed / 401).
+  breakerHours: parseFloat(opt('WA_BREAKER_HOURS', '6')),
+  coldFreezeHours: parseFloat(opt('WA_COLD_FREEZE_HOURS', '48')),
+  // Probation window after a fresh QR link: halved caps, doubled gaps.
+  warmupHours: parseFloat(opt('WA_WARMUP_HOURS', '72')),
   // Baileys socket timings (research §2).
   keepAliveIntervalMs: parseInt(opt('WA_KEEPALIVE_MS', '15000'), 10),
   connectTimeoutMs: parseInt(opt('WA_CONNECT_TIMEOUT_MS', '60000'), 10),

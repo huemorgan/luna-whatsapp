@@ -13,12 +13,14 @@ import { createRequire } from 'module';
 import { config } from './config.js';
 import {
   initSchema, getAccount, listAccounts, getMessageStats, getAccountMessageStats,
+  pgOutboxStore,
 } from './db.js';
 import { buildStatsPayload, buildAccountsBreakdown } from './stats.js';
 import {
   loadAll, getSession, allSessions, createAccount, patchAccount, deleteAccount,
   resolveSession, validAccountId,
 } from './accounts.js';
+import { classify, SameTextGuard, estimateWaitMs } from './outbox.js';
 
 const pkg = createRequire(import.meta.url)('../package.json');
 
@@ -67,6 +69,10 @@ app.get('/health', async (_req, res) => {
     const acc = await getAccount(config.account);
     sentToday = acc?.sent_today ?? 0;
   } catch {}
+  let queueDepth = null;
+  try {
+    if (config.outboxEnabled) queueDepth = await pgOutboxStore.queueDepth(config.account);
+  } catch {}
   res.json({
     status: 'ok',
     ...conn,
@@ -74,6 +80,14 @@ app.get('/health', async (_req, res) => {
     gateway_id: config.gatewayId,
     accounts_total: sessions.length,
     accounts_connected: sessions.filter((s) => s.getConnState().connected).length,
+    // 006: outbound-discipline state for the default account
+    queue_depth: queueDepth,
+    breaker: def?.breakerOpen()
+      ? { reason: def.breakerReason, until: new Date(def.breakerUntil).toISOString() }
+      : null,
+    warmup_until: def?.inWarmup()
+      ? new Date(def.linkedAt + config.warmupHours * 3600000).toISOString()
+      : null,
   });
 });
 
@@ -148,6 +162,12 @@ function accountView(row, session) {
     last_seen: row.last_seen instanceof Date ? row.last_seen.toISOString() : row.last_seen,
     enabled: row.enabled !== false,
     created_at: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+    breaker: session?.breakerOpen()
+      ? { reason: session.breakerReason, until: new Date(session.breakerUntil).toISOString() }
+      : null,
+    warmup_until: session?.inWarmup()
+      ? new Date(session.linkedAt + config.warmupHours * 3600000).toISOString()
+      : null,
   };
 }
 
@@ -284,6 +304,107 @@ function requireGroupJid(res, jid) {
   return false;
 }
 
+// ---------------------------------------------------------------------------
+// 006 outbox enqueue path — every send goes through the paced per-account
+// queue. Short waits answer synchronously (unchanged UX); longer ones 202.
+// ---------------------------------------------------------------------------
+
+const sameTextGuards = new Map(); // accountId -> SameTextGuard
+function burstGuardFor(accountId) {
+  let g = sameTextGuards.get(accountId);
+  if (!g) {
+    g = new SameTextGuard();
+    sameTextGuards.set(accountId, g);
+  }
+  return g;
+}
+
+function outboxView(row) {
+  return {
+    send_id: row.id,
+    chat_jid: row.chat_jid,
+    kind: row.kind,
+    class: row.class,
+    status: row.status,
+    attempts: row.attempts,
+    wa_msg_id: row.wa_msg_id ?? null,
+    last_error: row.last_error ?? null,
+    not_before: row.not_before instanceof Date ? row.not_before.toISOString() : row.not_before,
+    created_at: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+  };
+}
+
+async function enqueueSend(res, session, { chatJid, kind, payload, burstText }) {
+  if (session.breakerOpen()) {
+    return res.status(503).json({
+      ok: false, code: 'breaker_open',
+      error: `outbound frozen after a WhatsApp restriction signal (${session.breakerReason}). Do not retry.`,
+      until: new Date(session.breakerUntil).toISOString(),
+    });
+  }
+
+  // Recipient class: replying into a live chat vs known contact vs cold
+  // first-contact (the enforcement trigger — budgeted below).
+  let cls;
+  try {
+    cls = classify(await pgOutboxStore.lastInboundAt(session.accountId, chatJid));
+  } catch (e) {
+    console.error('[outbox] classify failed, defaulting to warm:', e.message);
+    cls = 'warm';
+  }
+  // Identical text fanning out to several chats is the exact pattern that got
+  // this account restricted — force cold pacing + budget on the overflow.
+  if (burstText && burstGuardFor(session.accountId).note(burstText, chatJid) && cls !== 'cold') {
+    console.warn('[outbox:%s] same-text burst detected → treating %s as cold',
+      session.accountId, chatJid);
+    cls = 'cold';
+  }
+
+  if (cls === 'cold') {
+    if (session.coldFrozen()) {
+      return res.status(503).json({
+        ok: false, code: 'cold_frozen',
+        error: 'first-contact sends are frozen after a recent WhatsApp restriction. Try again later or message a known contact.',
+      });
+    }
+    const counts = await pgOutboxStore.coldCounts(session.accountId);
+    const dailyCap = session.inWarmup() ? Math.min(2, config.coldDailyCap) : config.coldDailyCap;
+    if (counts.today >= dailyCap || counts.hour >= config.coldHourlyCap) {
+      return res.status(429).json({
+        ok: false, code: 'cold_budget',
+        error: `cold first-contact budget reached (${counts.today}/${dailyCap} today, ${counts.hour}/${config.coldHourlyCap} this hour) — protects the account from anti-spam enforcement.`,
+      });
+    }
+  }
+
+  const pendingClasses = (await pgOutboxStore.pending(session.accountId))
+    .filter((r) => r.status === 'queued' || r.status === 'sending')
+    .map((r) => r.class);
+  const row = await pgOutboxStore.enqueue({
+    account_id: session.accountId, chat_jid: chatJid, kind, payload, cls,
+  });
+  session.outbox?.wake();
+
+  const eta = estimateWaitMs(pendingClasses, cls, { warmup: session.inWarmup() });
+  if (eta <= config.syncWaitMs && session.outbox) {
+    const settled = await session.outbox.waitForSettle(row.id, config.syncWaitMs + 5000);
+    if (settled?.status === 'sent') {
+      return res.json({
+        ok: true, account: session.accountId, chat_jid: chatJid, wa_msg_id: settled.wa_msg_id,
+      });
+    }
+    if (settled?.status === 'failed') {
+      return sendErr(res, new Error(settled.last_error || 'send failed'));
+    }
+    // not settled inside the window — fall through to the queued answer
+  }
+  return res.status(202).json({
+    ok: true, queued: true, send_id: row.id, class: cls,
+    eta_seconds: Math.max(1, Math.round(eta / 1000)),
+    account: session.accountId, chat_jid: chatJid,
+  });
+}
+
 app.post('/send', async (req, res) => {
   const session = requireAccount(req, res);
   if (!session) return;
@@ -293,8 +414,13 @@ app.post('/send', async (req, res) => {
   }
   try {
     const jid = await session.resolveJid(chat_jid);
-    const result = await session.sendText(jid, text, reply_to);
-    res.json({ ok: true, account: session.accountId, chat_jid: jid, ...result });
+    if (!config.outboxEnabled || !session.outbox) {
+      const result = await session.sendText(jid, text, reply_to);
+      return res.json({ ok: true, account: session.accountId, chat_jid: jid, ...result });
+    }
+    await enqueueSend(res, session, {
+      chatJid: jid, kind: 'text', payload: { text, reply_to }, burstText: text,
+    });
   } catch (e) {
     sendErr(res, e);
   }
@@ -315,23 +441,36 @@ app.post('/send-media', async (req, res) => {
     return res.status(400).json({ error: 'chat_jid and one of url|data_base64 required' });
   }
   try {
-    let source;
-    if (data_base64) {
-      source = Buffer.from(data_base64, 'base64');
-    } else if (/^https?:\/\//i.test(url)) {
-      const r = await fetch(url, { signal: AbortSignal.timeout(30000) });
-      if (!r.ok) throw new Error(`fetch media ${r.status}`);
-      source = Buffer.from(await r.arrayBuffer());
-    } else {
-      // A local path — hand straight to Baileys' url loader.
-      source = url;
-    }
     const jid = await session.resolveJid(chat_jid);
-    const result = await session.sendMedia(jid, kind, source, {
-      caption, mimetype, fileName: file_name, replyToWaId: reply_to,
-      ptt, gifPlayback: gif_playback, ptv,
+    if (!config.outboxEnabled || !session.outbox) {
+      let source;
+      if (data_base64) {
+        source = Buffer.from(data_base64, 'base64');
+      } else if (/^https?:\/\//i.test(url)) {
+        const r = await fetch(url, { signal: AbortSignal.timeout(30000) });
+        if (!r.ok) throw new Error(`fetch media ${r.status}`);
+        source = Buffer.from(await r.arrayBuffer());
+      } else {
+        // A local path — hand straight to Baileys' url loader.
+        source = url;
+      }
+      const result = await session.sendMedia(jid, kind, source, {
+        caption, mimetype, fileName: file_name, replyToWaId: reply_to,
+        ptt, gifPlayback: gif_playback, ptv,
+      });
+      return res.json({ ok: true, account: session.accountId, chat_jid: jid, ...result });
+    }
+    // Outbox path: store the source reference; the worker materializes bytes
+    // at delivery time (deliverOutboxRow), so restarts don't lose the payload.
+    await enqueueSend(res, session, {
+      chatJid: jid,
+      kind: 'media',
+      payload: {
+        media_kind: kind, url, data_base64, caption, mimetype,
+        file_name, reply_to, ptt, gif_playback, ptv,
+      },
+      burstText: caption,
     });
-    res.json({ ok: true, account: session.accountId, chat_jid: jid, ...result });
   } catch (e) {
     sendErr(res, e);
   }
@@ -346,10 +485,85 @@ app.post('/react', async (req, res) => {
   }
   try {
     const jid = await session.resolveJid(chat_jid);
-    const result = await session.react(jid, wa_msg_id, emoji);
-    res.json({ account: session.accountId, ...result });
+    if (!config.outboxEnabled || !session.outbox) {
+      const result = await session.react(jid, wa_msg_id, emoji);
+      return res.json({ account: session.accountId, ...result });
+    }
+    await enqueueSend(res, session, {
+      chatJid: jid, kind: 'react', payload: { wa_msg_id, emoji },
+    });
   } catch (e) {
     sendErr(res, e);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// signed outbox introspection (per-account)
+// ---------------------------------------------------------------------------
+
+app.post('/outbox/status', async (req, res) => {
+  const session = requireAccount(req, res);
+  if (!session) return;
+  const { send_id } = req.body || {};
+  if (!send_id) return res.status(400).json({ ok: false, error: 'send_id required' });
+  try {
+    const row = await pgOutboxStore.get(send_id, session.accountId);
+    if (!row) return res.status(404).json({ ok: false, error: 'no such send' });
+    res.json({ ok: true, account: session.accountId, ...outboxView(row) });
+  } catch (e) {
+    sendErr(res, e);
+  }
+});
+
+app.post('/outbox/list', async (req, res) => {
+  const session = requireAccount(req, res);
+  if (!session) return;
+  try {
+    const rows = await pgOutboxStore.pending(session.accountId);
+    res.json({
+      ok: true,
+      account: session.accountId,
+      pending: rows.map(outboxView),
+      breaker: session.breakerOpen()
+        ? { reason: session.breakerReason, until: new Date(session.breakerUntil).toISOString() }
+        : null,
+    });
+  } catch (e) {
+    sendErr(res, e);
+  }
+});
+
+app.post('/outbox/cancel', async (req, res) => {
+  const session = requireAccount(req, res);
+  if (!session) return;
+  const { send_id } = req.body || {};
+  if (!send_id) return res.status(400).json({ ok: false, error: 'send_id required' });
+  try {
+    const row = await pgOutboxStore.cancel(send_id, session.accountId);
+    if (!row) {
+      return res.status(409).json({
+        ok: false, error: 'not cancelable (already sending, sent, or unknown send_id)',
+      });
+    }
+    res.json({ ok: true, account: session.accountId, ...outboxView(row) });
+  } catch (e) {
+    sendErr(res, e);
+  }
+});
+
+// Admin: release a tripped breaker and re-queue held rows. Deliberately manual
+// — a human should decide the coast is clear, not a timer alone.
+app.post('/accounts/:id/outbox/release', async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const session = getSession(req.params.id);
+  if (!session) return res.status(404).json({ error: 'no such account' });
+  try {
+    await session.releaseBreaker();
+    const released = await pgOutboxStore.releaseHeld(session.accountId);
+    session.outbox?.wake();
+    res.json({ ok: true, account: session.accountId, released });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -470,11 +684,13 @@ app.post('/groups/invite', async (req, res) => {
 
 async function main() {
   await initSchema();
-  await loadAll();
+  // Listen first: account connects are staggered by 15–45s each (006 Part E),
+  // and Render's health check must not wait behind that.
   app.listen(config.port, () => {
     console.log(`[gateway] listening on :${config.port} (gateway ${config.gatewayId})`);
     console.log(`[gateway] QR page: /qr?key=<GATEWAY_ADMIN_KEY> · accounts API: /accounts`);
   });
+  loadAll().catch((e) => console.error('[gateway] loadAll failed:', e));
 }
 
 main().catch((e) => {

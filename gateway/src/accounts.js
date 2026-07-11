@@ -8,9 +8,10 @@ import path from 'node:path';
 
 import { config } from './config.js';
 import {
-  listAccounts, getAccount, insertAccount, updateAccount,
+  listAccounts, getAccount, insertAccount, updateAccount, pgOutboxStore,
 } from './db.js';
 import { Session } from './session.js';
+import { OutboxWorker } from './outbox.js';
 import { verify } from './hmac.js';
 
 const sessions = new Map(); // account_id -> Session
@@ -51,6 +52,15 @@ export function migrateFlatAuthDir() {
 
 async function startSessionFor(row) {
   const session = new Session(row);
+  // 006: every account drains its sends through a paced outbox worker.
+  if (config.outboxEnabled) {
+    session.outbox = new OutboxWorker({
+      accountId: row.account_id,
+      store: pgOutboxStore,
+      sender: session,
+    });
+    session.outbox.start();
+  }
   sessions.set(row.account_id, session);
   try {
     await session.start();
@@ -63,10 +73,19 @@ async function startSessionFor(row) {
 }
 
 // Boot: start a session for every enabled account this gateway owns.
+// Connects are staggered (006 Part E) so N accounts never handshake from this
+// IP at the same instant; queued sends wait in the outbox meanwhile.
 export async function loadAll() {
   migrateFlatAuthDir();
   const rows = await listAccounts();
+  let first = true;
   for (const row of rows) {
+    if (!first) {
+      const delay = 15000 + Math.random() * 30000;
+      console.log('[accounts] staggering next connect by %ds', Math.round(delay / 1000));
+      await new Promise((r) => setTimeout(r, delay));
+    }
+    first = false;
     await startSessionFor(row);
   }
   console.log(`[accounts] ${rows.length} account(s) loaded (gateway ${config.gatewayId})`);

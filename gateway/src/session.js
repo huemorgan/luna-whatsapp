@@ -20,7 +20,39 @@ import { config } from './config.js';
 import { insertMessage, upsertChat, updateAccount, bumpSendCounter } from './db.js';
 import { forwardInbound } from './inbound.js';
 
-const logger = pino({ level: process.env.WA_LOG_LEVEL || 'warn' });
+const LOG_LEVEL = process.env.WA_LOG_LEVEL || 'warn';
+
+// Restriction signals WhatsApp surfaces only inside Baileys' own log stream
+// (there is no event for them): "error 463: account restricted or missing
+// tctoken for contact" preceded both device removals on 2026-07-10/11. Pure so
+// it's unit-testable; wired into a per-session pino hook in start().
+export function detectRestrictionSignal(args) {
+  try {
+    const text = (args || [])
+      .map((a) => (typeof a === 'string' ? a : JSON.stringify(a)))
+      .join(' ');
+    return /account restricted|missing tctoken|error 463|device_removed/i.test(text);
+  } catch {
+    return false;
+  }
+}
+
+// Per-account device fingerprint so N accounts on one gateway don't present
+// identical clients. Deterministic (stable across restarts — a changed tuple
+// shows up as a "new device"); `default` keeps the pre-006 tuple so the
+// already-linked number never sees a device change.
+const BROWSER_TUPLES = [
+  ['Luna WhatsApp', 'Chrome', '1.0.0'],
+  ['Luna', 'Safari', '17.4'],
+  ['Luna Desktop', 'Edge', '120.0'],
+  ['Luna Web', 'Firefox', '125.0'],
+];
+export function pickBrowser(accountId) {
+  if (accountId === 'default') return BROWSER_TUPLES[0];
+  let h = 0;
+  for (const ch of String(accountId)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return BROWSER_TUPLES[h % BROWSER_TUPLES.length];
+}
 
 // ---------------------------------------------------------------------------
 // pure helpers
@@ -212,6 +244,57 @@ export class Session {
     this.stopped = false;
     this.watchdogTimer = null;
     this.groupNameCache = new Map(); // jid -> { name, at }
+
+    // 006 anti-ban state (persisted on the registry row).
+    this.proxyUrl = row.proxy_url || null;
+    this.linkedAt = row.linked_at ? new Date(row.linked_at).getTime() : null;
+    this.breakerUntil = row.breaker_until ? new Date(row.breaker_until).getTime() : null;
+    this.breakerReason = row.breaker_reason || null;
+    this.coldFreezeUntil = null; // derived on trip; conservative across restarts via breaker_until
+    this._sawQr = false;         // a QR was displayed since the last open → next open is a (re)link
+    this.outbox = null;          // OutboxWorker, attached by accounts.js
+  }
+
+  // ---- 006 breaker / warm-up ------------------------------------------------
+
+  breakerOpen() {
+    return !!this.breakerUntil && Date.now() < this.breakerUntil;
+  }
+
+  coldFrozen() {
+    return this.breakerOpen()
+      || (!!this.coldFreezeUntil && Date.now() < this.coldFreezeUntil);
+  }
+
+  inWarmup() {
+    return !!this.linkedAt
+      && Date.now() - this.linkedAt < config.warmupHours * 3600 * 1000;
+  }
+
+  // WhatsApp pushed back (463 restriction / device_removed / 401). Freeze
+  // outbound and park the queue; nothing auto-fires when the window expires.
+  tripBreaker(reason) {
+    const now = Date.now();
+    if (this.breakerOpen()) return; // already tripped — don't extend on every log line
+    this.breakerUntil = now + config.breakerHours * 3600 * 1000;
+    this.coldFreezeUntil = now + config.coldFreezeHours * 3600 * 1000;
+    this.breakerReason = reason;
+    console.error('[wa:%s] BREAKER TRIPPED (%s) — outbound frozen until %s',
+      this.accountId, reason, new Date(this.breakerUntil).toISOString());
+    void this.setAccountState({
+      breaker_until: new Date(this.breakerUntil).toISOString(),
+      breaker_reason: reason,
+    });
+    void this.outbox?.holdAll();
+  }
+
+  // Manual all-clear (admin /accounts/:id/outbox/release). Clears both the
+  // breaker and the cold freeze; the caller re-queues held rows.
+  async releaseBreaker() {
+    this.breakerUntil = null;
+    this.breakerReason = null;
+    this.coldFreezeUntil = null;
+    await this.setAccountState({ breaker_until: null, breaker_reason: null });
   }
 
   getConnState() {
@@ -366,22 +449,59 @@ export class Session {
     await forwardInbound(env, { url: this.inboundUrl, secret: this.secret });
   }
 
+  // Baileys logs restriction pushback (463 etc.) without emitting any event —
+  // a per-session pino hook is the only place to catch it and trip the breaker.
+  _makeLogger() {
+    const session = this;
+    return pino({
+      level: LOG_LEVEL,
+      hooks: {
+        logMethod(inputArgs, method) {
+          if (detectRestrictionSignal(inputArgs)) {
+            session.tripBreaker('whatsapp restriction signal in client log');
+          }
+          return method.apply(this, inputArgs);
+        },
+      },
+    });
+  }
+
+  // Optional per-account egress proxy (006 Part E). Sticky residential/mobile
+  // proxies keep N accounts from sharing one datacenter IP's fate.
+  async _makeAgent() {
+    if (!this.proxyUrl) return undefined;
+    try {
+      if (/^socks/i.test(this.proxyUrl)) {
+        const { SocksProxyAgent } = await import('socks-proxy-agent');
+        return new SocksProxyAgent(this.proxyUrl);
+      }
+      const { HttpsProxyAgent } = await import('https-proxy-agent');
+      return new HttpsProxyAgent(this.proxyUrl);
+    } catch (e) {
+      console.error('[wa:%s] proxy agent unavailable (%s) — connecting direct',
+        this.accountId, e.message);
+      return undefined;
+    }
+  }
+
   async start() {
     this.stopped = false;
     const { state, saveCreds } = await useMultiFileAuthState(this.authDir);
     const { version } = await fetchLatestBaileysVersion();
+    const agent = await this._makeAgent();
 
     const sock = makeWASocket({
       version,
       auth: state,
-      logger,
+      logger: this._makeLogger(),
       printQRInTerminal: false,
-      browser: ['Luna WhatsApp', 'Chrome', '1.0.0'],
+      browser: pickBrowser(this.accountId),
       markOnlineOnConnect: false,
       syncFullHistory: false,
       keepAliveIntervalMs: config.keepAliveIntervalMs,
       connectTimeoutMs: config.connectTimeoutMs,
       defaultQueryTimeoutMs: config.defaultQueryTimeoutMs,
+      ...(agent ? { agent, fetchAgent: agent } : {}),
     });
     this.sock = sock;
 
@@ -395,6 +515,7 @@ export class Session {
       this.markActivity();
       if (qr) {
         this.currentQr = qr;
+        this._sawQr = true;
         this.status = 'linking';
         await this.setAccountState({ status: 'linking' });
         console.log('[wa:%s] QR ready — scan to link', this.accountId);
@@ -404,11 +525,22 @@ export class Session {
         this.currentQr = null;
         this.selfJid = sock.user?.id || null;
         this.selfNumber = normalizeNumber(this.selfJid);
-        await this.setAccountState({
+        const patch = {
           status: 'open',
           self_jid: this.selfJid,
           last_seen: new Date().toISOString(),
-        });
+        };
+        // Open after a QR was shown = a fresh (re)link → start the warm-up
+        // probation window (halved caps, doubled gaps).
+        if (this._sawQr) {
+          this._sawQr = false;
+          this.linkedAt = Date.now();
+          patch.linked_at = new Date(this.linkedAt).toISOString();
+          console.log('[wa:%s] fresh link — warm-up mode for %dh',
+            this.accountId, config.warmupHours);
+        }
+        await this.setAccountState(patch);
+        this.outbox?.wake();
         console.log('[wa:%s] connection open as %s', this.accountId, this.selfJid);
       }
       if (connection === 'close') {
@@ -418,6 +550,11 @@ export class Session {
         await this.setAccountState({ status: this.status });
         console.log('[wa:%s] connection closed. code=%s loggedOut=%s',
           this.accountId, code, loggedOut);
+        // 401/403 is enforcement (device_removed / conflict / forbidden), not a
+        // network blip — freeze outbound so we never "retry through" it.
+        if (code === 401 || code === 403) {
+          this.tripBreaker(`connection closed with code ${code}`);
+        }
         if (!loggedOut && !this.stopped) this.scheduleReconnect();
         else if (loggedOut) {
           console.log('[wa:%s] logged out — re-link required', this.accountId);
@@ -495,6 +632,7 @@ export class Session {
   // number on the phone side too.
   async stop({ logout = false } = {}) {
     this.stopped = true;
+    this.outbox?.stop();
     if (this.watchdogTimer) {
       clearInterval(this.watchdogTimer);
       this.watchdogTimer = null;
@@ -510,11 +648,46 @@ export class Session {
     this.currentQr = null;
   }
 
+  // Warm-up probation halves the daily budget (006).
+  effectiveDailyCap() {
+    return this.inWarmup() ? Math.max(1, Math.floor(this.dailyCap / 2)) : this.dailyCap;
+  }
+
+  // The outbox worker's send hook: one queued row → one real send. Media
+  // sources stored as url/base64 in the payload are materialized here, at
+  // send time, not at enqueue time.
+  async deliverOutboxRow(row) {
+    const p = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
+    if (row.kind === 'text') {
+      return this.sendText(row.chat_jid, p.text, p.reply_to);
+    }
+    if (row.kind === 'react') {
+      return this.react(row.chat_jid, p.wa_msg_id, p.emoji);
+    }
+    if (row.kind === 'media') {
+      let source;
+      if (p.data_base64) {
+        source = Buffer.from(p.data_base64, 'base64');
+      } else if (/^https?:\/\//i.test(p.url || '')) {
+        const r = await fetch(p.url, { signal: AbortSignal.timeout(30000) });
+        if (!r.ok) throw new Error(`fetch media ${r.status}`);
+        source = Buffer.from(await r.arrayBuffer());
+      } else {
+        source = p.url; // local path — Baileys' url loader
+      }
+      return this.sendMedia(row.chat_jid, p.media_kind || 'image', source, {
+        caption: p.caption, mimetype: p.mimetype, fileName: p.file_name,
+        replyToWaId: p.reply_to, ptt: p.ptt, gifPlayback: p.gif_playback, ptv: p.ptv,
+      });
+    }
+    throw new Error(`unknown outbox kind: ${row.kind}`);
+  }
+
   // WA_DRY_SEND=1 (dev/test only): accept sends with no linked number — run
   // the real cap+capture path, skip the socket. Lets the dojo suite and local
   // dev exercise the full plugin→gateway loop without linking a real WhatsApp.
   async dryDeliver(chatJid, kind, body, replyToWaId) {
-    const allowed = await bumpSendCounter(this.accountId, this.dailyCap);
+    const allowed = await bumpSendCounter(this.accountId, this.effectiveDailyCap());
     if (!allowed) throw new Error('daily send cap reached');
     const waMsgId = `DRY-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     await insertMessage({
@@ -527,11 +700,15 @@ export class Session {
   }
 
   async sendText(chatJid, text, replyToWaId) {
+    if (this.breakerOpen()) {
+      throw Object.assign(new Error(`outbound frozen: ${this.breakerReason}`),
+        { status: 503, code: 'breaker_open' });
+    }
     if (!this.sock || this.status !== 'open') {
       if (process.env.WA_DRY_SEND === '1') return this.dryDeliver(chatJid, 'text', text, replyToWaId);
       throw new Error('WhatsApp socket not connected');
     }
-    const allowed = await bumpSendCounter(this.accountId, this.dailyCap);
+    const allowed = await bumpSendCounter(this.accountId, this.effectiveDailyCap());
     if (!allowed) throw new Error('daily send cap reached');
     // Light jitter to look less bot-like (ban-risk guard).
     await new Promise((r) => setTimeout(r, 300 + Math.random() * 700));
@@ -546,13 +723,17 @@ export class Session {
   // Send any media kind (image/video/audio/document/sticker). Reuses the same
   // send-cap + jitter guards as text so ban-risk pacing is identical.
   async sendMedia(chatJid, mediaKind, source, opts = {}) {
+    if (this.breakerOpen()) {
+      throw Object.assign(new Error(`outbound frozen: ${this.breakerReason}`),
+        { status: 503, code: 'breaker_open' });
+    }
     if (!this.sock || this.status !== 'open') {
       if (process.env.WA_DRY_SEND === '1') {
         return this.dryDeliver(chatJid, mediaKind, opts.caption || '', opts.replyToWaId);
       }
       throw new Error('WhatsApp socket not connected');
     }
-    const allowed = await bumpSendCounter(this.accountId, this.dailyCap);
+    const allowed = await bumpSendCounter(this.accountId, this.effectiveDailyCap());
     if (!allowed) throw new Error('daily send cap reached');
     await new Promise((r) => setTimeout(r, 300 + Math.random() * 700));
 

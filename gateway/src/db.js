@@ -80,6 +80,32 @@ CREATE TABLE IF NOT EXISTS whatsapp_accounts (
   created_at   timestamptz NOT NULL DEFAULT now(),
   updated_at   timestamptz NOT NULL DEFAULT now()
 );
+
+-- 006: breaker/warm-up state + optional per-account egress proxy.
+ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS breaker_until  timestamptz;
+ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS breaker_reason text;
+ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS linked_at      timestamptz;
+ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS proxy_url      text;
+
+-- 006: persistent outbound queue. Every send is a row here first; a per-account
+-- worker drains serially with class-based pacing, so a burst is impossible no
+-- matter what callers do. Survives restarts/deploys by construction.
+CREATE TABLE IF NOT EXISTS whatsapp_outbox (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id  text NOT NULL,
+  chat_jid    text NOT NULL,
+  kind        text NOT NULL,              -- text | media | react
+  payload     jsonb NOT NULL,
+  class       text NOT NULL,              -- conversational | warm | cold
+  status      text NOT NULL DEFAULT 'queued', -- queued|sending|sent|failed|canceled|held
+  not_before  timestamptz NOT NULL DEFAULT now(),
+  attempts    int NOT NULL DEFAULT 0,
+  last_error  text,
+  wa_msg_id   text,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  sent_at     timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_outbox_drain ON whatsapp_outbox (account_id, status, not_before, created_at);
 `;
 
 export async function initSchema() {
@@ -171,6 +197,7 @@ export async function insertAccount({ account_id, secret, inbound_url, daily_cap
 const ACCOUNT_COLS = new Set([
   'secret', 'inbound_url', 'status', 'self_jid', 'last_seen',
   'sent_today', 'sent_day', 'daily_cap', 'enabled',
+  'breaker_until', 'breaker_reason', 'linked_at', 'proxy_url',
 ]);
 
 export async function updateAccount(accountId, patch) {
@@ -237,6 +264,147 @@ export async function upsertChat(c) {
     [c.account ?? 'default', c.chat_jid, c.chat_kind, c.chat_name ?? null],
   );
 }
+
+// ---------------------------------------------------------------------------
+// outbox (006 anti-ban send discipline)
+// ---------------------------------------------------------------------------
+
+// pgOutboxStore implements the store interface OutboxWorker consumes (see
+// outbox.js for the in-memory test double). All queries are account-scoped.
+export const pgOutboxStore = {
+  async enqueue({ account_id, chat_jid, kind, payload, cls, not_before }) {
+    const r = await pool.query(
+      `INSERT INTO whatsapp_outbox (account_id, chat_jid, kind, payload, class, not_before)
+       VALUES ($1,$2,$3,$4,$5, COALESCE($6, now())) RETURNING *`,
+      [account_id, chat_jid, kind, JSON.stringify(payload), cls, not_before ?? null],
+    );
+    return r.rows[0];
+  },
+
+  // FIFO head of the queue (retries keep their slot; the worker sleeps until
+  // the head's not_before when it is in the future).
+  async nextQueued(accountId) {
+    const r = await pool.query(
+      `SELECT * FROM whatsapp_outbox
+        WHERE account_id = $1 AND status = 'queued'
+        ORDER BY not_before, created_at LIMIT 1`,
+      [accountId],
+    );
+    return r.rows[0] ?? null;
+  },
+
+  async mark(id, patch) {
+    const COLS = new Set(['status', 'attempts', 'last_error', 'wa_msg_id', 'sent_at', 'not_before']);
+    const fields = [];
+    const vals = [];
+    let i = 1;
+    for (const [k, v] of Object.entries(patch)) {
+      if (!COLS.has(k)) throw new Error(`bad outbox column: ${k}`);
+      fields.push(`${k} = $${i++}`);
+      vals.push(v);
+    }
+    vals.push(id);
+    // Claiming a row ('sending') only succeeds from 'queued' — this is what
+    // makes /outbox/cancel race-free against the drain loop.
+    const guard = patch.status === 'sending' ? ` AND status = 'queued'` : '';
+    const r = await pool.query(
+      `UPDATE whatsapp_outbox SET ${fields.join(', ')} WHERE id = $${i}${guard} RETURNING *`,
+      vals,
+    );
+    return r.rows[0] ?? null;
+  },
+
+  async get(id, accountId) {
+    const r = await pool.query(
+      `SELECT * FROM whatsapp_outbox WHERE id = $1 AND account_id = $2`,
+      [id, accountId],
+    );
+    return r.rows[0] ?? null;
+  },
+
+  async pending(accountId) {
+    const r = await pool.query(
+      `SELECT * FROM whatsapp_outbox
+        WHERE account_id = $1 AND status IN ('queued','sending','held')
+        ORDER BY not_before, created_at`,
+      [accountId],
+    );
+    return r.rows;
+  },
+
+  async cancel(id, accountId) {
+    const r = await pool.query(
+      `UPDATE whatsapp_outbox SET status = 'canceled'
+        WHERE id = $1 AND account_id = $2 AND status = 'queued' RETURNING *`,
+      [id, accountId],
+    );
+    return r.rows[0] ?? null;
+  },
+
+  // Breaker trip: park everything; nothing auto-fires when the breaker clears.
+  async holdQueued(accountId) {
+    const r = await pool.query(
+      `UPDATE whatsapp_outbox SET status = 'held'
+        WHERE account_id = $1 AND status = 'queued' RETURNING id`,
+      [accountId],
+    );
+    return r.rowCount;
+  },
+
+  async releaseHeld(accountId) {
+    const r = await pool.query(
+      `UPDATE whatsapp_outbox SET status = 'queued', not_before = now()
+        WHERE account_id = $1 AND status = 'held' RETURNING id`,
+      [accountId],
+    );
+    return r.rowCount;
+  },
+
+  // Crash recovery: rows stuck in 'sending' from a previous process go back to
+  // queued (at-least-once; WhatsApp has no idempotent send to lean on).
+  async recoverSending(accountId) {
+    const r = await pool.query(
+      `UPDATE whatsapp_outbox SET status = 'queued'
+        WHERE account_id = $1 AND status = 'sending' RETURNING id`,
+      [accountId],
+    );
+    return r.rowCount;
+  },
+
+  // Cold budget accounting: everything admitted today (queued/sending/sent)
+  // counts, so canceling and re-enqueueing can't launder budget.
+  async coldCounts(accountId) {
+    const r = await pool.query(
+      `SELECT
+         count(*) FILTER (WHERE created_at >= date_trunc('day', now()))  AS today,
+         count(*) FILTER (WHERE created_at >= now() - interval '1 hour') AS hour
+       FROM whatsapp_outbox
+       WHERE account_id = $1 AND class = 'cold'
+         AND status IN ('queued','sending','sent')`,
+      [accountId],
+    );
+    return { today: Number(r.rows[0].today), hour: Number(r.rows[0].hour) };
+  },
+
+  // Recipient classification input: when did this chat last write to us?
+  async lastInboundAt(accountId, chatJid) {
+    const r = await pool.query(
+      `SELECT max(ts) AS last FROM whatsapp_messages
+        WHERE account = $1 AND chat_jid = $2 AND NOT from_me`,
+      [accountId, chatJid],
+    );
+    return r.rows[0]?.last ?? null;
+  },
+
+  async queueDepth(accountId) {
+    const r = await pool.query(
+      `SELECT count(*) AS n FROM whatsapp_outbox
+        WHERE account_id = $1 AND status IN ('queued','sending')`,
+      [accountId],
+    );
+    return Number(r.rows[0].n);
+  },
+};
 
 // ---------------------------------------------------------------------------
 // stats

@@ -33,11 +33,14 @@ differ and every signature will fail. Always verify against the raw body.
 
 | Method | Path | Auth | Body | Returns |
 |---|---|---|---|---|
-| GET | `/health` | none | – | `{status, connected, self_jid, has_qr, last_activity_at, sent_today}` |
+| GET | `/health` | none | – | `{status, connected, self_jid, has_qr, last_activity_at, sent_today, queue_depth, breaker, warmup_until}` |
 | GET | `/qr?key=<GATEWAY_ADMIN_KEY>` | admin key | – | HTML QR page (auto-refreshes; shows "linked" once connected) |
-| POST | `/send` | HMAC | `{chat_jid, text, reply_to?}` | `{ok, chat_jid, wa_msg_id}` |
-| POST | `/send-media` | HMAC | `{chat_jid, kind, url?\|data_base64?, caption?, mimetype?, file_name?, reply_to?, gif_playback?, ptt?, ptv?}` | `{ok, chat_jid, wa_msg_id}` |
-| POST | `/react` | HMAC | `{chat_jid, wa_msg_id, emoji}` | `{ok}` |
+| POST | `/send` | HMAC | `{chat_jid, text, reply_to?}` | 200 `{ok, chat_jid, wa_msg_id}` or 202 queued (below) |
+| POST | `/send-media` | HMAC | `{chat_jid, kind, url?\|data_base64?, caption?, mimetype?, file_name?, reply_to?, gif_playback?, ptt?, ptv?}` | 200 `{ok, chat_jid, wa_msg_id}` or 202 queued |
+| POST | `/react` | HMAC | `{chat_jid, wa_msg_id, emoji}` | 200 `{ok}` or 202 queued |
+| POST | `/outbox/status` | HMAC | `{send_id}` | `{ok, send_id, chat_jid, kind, class, status, attempts, wa_msg_id, last_error, not_before, created_at}` |
+| POST | `/outbox/list` | HMAC | `{}` | `{ok, pending: [row…], breaker: {reason, until} \| null}` |
+| POST | `/outbox/cancel` | HMAC | `{send_id}` | `{ok, …row}` — 409 if already sending/sent |
 | POST | `/resolve` | HMAC | `{target}` | `{ok, jid, kind}` — 400 invalid, 404 `not_on_whatsapp` |
 | POST | `/groups/list` | HMAC | `{}` | `{ok, groups: [{jid, subject, participants_count, owner, announce}]}` |
 | POST | `/groups/info` | HMAC | `{group_jid}` | `{ok, group: {jid, subject, description, owner, created_at, announce, participants_count, participants: [{jid, admin}], me_admin}}` |
@@ -130,17 +133,40 @@ Rules the plugin relies on:
 ## Outbound send (plugin → gateway `/send`)
 
 `plugin/plugin_whatsapp/client.py::send_message` → `gateway/src/index.js` `/send`
-→ `wa.js::sendText`.
+→ the per-account **outbox** (006 anti-ban send discipline) → `session.js`.
+
+Every send is enqueued in `whatsapp_outbox` and drained serially with a
+randomized human-pacing gap by recipient class:
+
+| class | meaning | gap between sends |
+|---|---|---|
+| `conversational` | that chat wrote to us in the last 15 min | 1.5–4 s |
+| `warm` | that chat has written to us at some point | 8–25 s |
+| `cold` | first-ever outbound to this chat (the 463 enforcement trigger) | 90–240 s + budget (6/day, 2/hour) |
+
+Same normalized text to ≥3 distinct chats in 10 min is re-classed `cold`.
+
+**Response semantics (all three send endpoints):**
 
 ```json
-// request
-{ "chat_jid": "…", "text": "reply text", "reply_to": "wa_msg_id or null" }
-// response
-{ "ok": true, "wa_msg_id": "the sent message id (the ack)" }
+// 200 — delivered synchronously (estimated wait ≤ ~10 s and it settled in time)
+{ "ok": true, "account": "…", "chat_jid": "…", "wa_msg_id": "3EB0…" }
+// 202 — accepted and queued; WILL be delivered. NEVER retry a 202.
+{ "ok": true, "queued": true, "send_id": "<uuid>", "class": "warm",
+  "eta_seconds": 42, "account": "…", "chat_jid": "…" }
+// 429 — cold first-contact budget exhausted (code: "cold_budget"). Not retryable today.
+// 503 — circuit breaker open after a WhatsApp restriction signal
+//       (code: "breaker_open" | "cold_frozen", until: ISO). Do not retry;
+//       held sends fire only after an admin releases the breaker.
+{ "ok": false, "code": "breaker_open", "error": "…", "until": "2026-…" }
 ```
 
-A send is only "done" when Baileys returns the outbound `wa_msg_id`. The gateway
-also enforces the daily cap and jitter here.
+The breaker trips on `error 463` / `device_removed` in the Baileys log stream or
+a 401/403 connection close, freezes outbound for 6 h (cold sends 48 h), parks
+queued rows as `held`, and requires manual release:
+`POST /accounts/{id}/outbox/release` (admin key). A fresh QR link starts a 72 h
+warm-up (halved daily cap, doubled gaps, cold budget 2/day).
+`WA_OUTBOX=0` restores the pre-006 direct-send path.
 
 ## Config that must line up across ends
 
