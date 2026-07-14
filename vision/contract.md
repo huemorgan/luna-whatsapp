@@ -33,11 +33,12 @@ differ and every signature will fail. Always verify against the raw body.
 
 | Method | Path | Auth | Body | Returns |
 |---|---|---|---|---|
-| GET | `/health` | none | – | `{status, connected, self_jid, has_qr, last_activity_at, sent_today, queue_depth, breaker, warmup_until}` |
+| GET | `/health` | none | – | `{status, connected, self_jid, has_qr, last_activity_at, sent_today, queue_depth, breaker, warmup_until, voice}` |
 | GET | `/qr?key=<GATEWAY_ADMIN_KEY>` | admin key | – | HTML QR page (auto-refreshes; shows "linked" once connected) |
 | POST | `/send` | HMAC | `{chat_jid, text, reply_to?}` | 200 `{ok, chat_jid, wa_msg_id}` or 202 queued (below) |
 | POST | `/send-media` | HMAC | `{chat_jid, kind, url?\|data_base64?, caption?, mimetype?, file_name?, reply_to?, gif_playback?, ptt?, ptv?}` | 200 `{ok, chat_jid, wa_msg_id}` or 202 queued |
 | POST | `/react` | HMAC | `{chat_jid, wa_msg_id, emoji}` | 200 `{ok}` or 202 queued |
+| POST | `/send-voice` | HMAC | `{chat_jid, text, voice_id?, reply_to?}` | 200/202 like `/send` — gateway TTS (ElevenLabs) → ptt voice note; 503 `voice_disabled` without `ELEVENLABS_API_KEY` |
 | POST | `/outbox/status` | HMAC | `{send_id}` | `{ok, send_id, chat_jid, kind, class, status, attempts, wa_msg_id, last_error, not_before, created_at}` |
 | POST | `/outbox/list` | HMAC | `{}` | `{ok, pending: [row…], breaker: {reason, until} \| null}` |
 | POST | `/outbox/cancel` | HMAC | `{send_id}` | `{ok, …row}` — 409 if already sending/sent |
@@ -85,10 +86,17 @@ Produced in `gateway/src/wa.js` (`forwardInbound` payload), consumed in
   "ts":            "2026-07-01T09:00:00.000Z",   // ISO 8601, UTC
   "kind":          "text|image|audio|video|doc|sticker|contact|location|reaction|other",
   "body":          "message text / caption / '' ",
+  "transcribed":   false,  // 007: kind "audio" + true → body is an ElevenLabs STT transcript
   "mentioned_me":  true,   // gateway computed: was the linked number @mentioned?
   "is_reply_to_me":false   // gateway computed: is this a reply to the bot?
 }
 ```
+
+Voice notes (007): when the gateway has `ELEVENLABS_API_KEY`, an inbound voice
+note is downloaded and transcribed (Scribe STT) before forwarding — `kind`
+stays `"audio"`, `body` carries the transcript, `transcribed: true`. On any
+STT failure the pre-007 shape (`body: ""`, `transcribed: false`) is forwarded
+instead — the plugin needs no special handling either way.
 
 ### Reaction events (`kind == "reaction"`)
 

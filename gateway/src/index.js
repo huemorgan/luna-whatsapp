@@ -21,6 +21,7 @@ import {
   resolveSession, validAccountId,
 } from './accounts.js';
 import { classify, SameTextGuard, estimateWaitMs } from './outbox.js';
+import { voiceEnabled, synthesizeVoice } from './voice.js';
 
 const pkg = createRequire(import.meta.url)('../package.json');
 
@@ -88,6 +89,8 @@ app.get('/health', async (_req, res) => {
     warmup_until: def?.inWarmup()
       ? new Date(def.linkedAt + config.warmupHours * 3600000).toISOString()
       : null,
+    // 007: voice processing available (ELEVENLABS_API_KEY configured)
+    voice: voiceEnabled(),
   });
 });
 
@@ -470,6 +473,44 @@ app.post('/send-media', async (req, res) => {
         file_name, reply_to, ptt, gif_playback, ptv,
       },
       burstText: caption,
+    });
+  } catch (e) {
+    sendErr(res, e);
+  }
+});
+
+// 007: text → spoken voice note (ElevenLabs TTS). Synthesis happens at
+// delivery time inside the outbox worker; this endpoint only validates and
+// queues, so pacing/budgets apply exactly as for text sends.
+app.post('/send-voice', async (req, res) => {
+  const session = requireAccount(req, res);
+  if (!session) return;
+  const { chat_jid, text, voice_id, reply_to } = req.body || {};
+  if (!chat_jid || !text) {
+    return res.status(400).json({ error: 'chat_jid and text required' });
+  }
+  if (!voiceEnabled()) {
+    return res.status(503).json({
+      ok: false, code: 'voice_disabled',
+      error: 'voice is not configured on this gateway (ELEVENLABS_API_KEY missing)',
+    });
+  }
+  if (!voice_id && !config.eleven.voiceId) {
+    return res.status(400).json({
+      ok: false, error: 'no voice configured — set ELEVENLABS_VOICE_ID or pass voice_id',
+    });
+  }
+  try {
+    const jid = await session.resolveJid(chat_jid);
+    if (!config.outboxEnabled || !session.outbox) {
+      const { buffer, mimetype } = await synthesizeVoice(text, { voiceId: voice_id });
+      const result = await session.sendMedia(jid, 'audio', buffer, {
+        mimetype, ptt: true, replyToWaId: reply_to,
+      });
+      return res.json({ ok: true, account: session.accountId, chat_jid: jid, ...result });
+    }
+    await enqueueSend(res, session, {
+      chatJid: jid, kind: 'voice', payload: { text, voice_id, reply_to }, burstText: text,
     });
   } catch (e) {
     sendErr(res, e);

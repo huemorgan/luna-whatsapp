@@ -52,6 +52,19 @@ export const config = {
   coldFreezeHours: parseFloat(opt('WA_COLD_FREEZE_HOURS', '48')),
   // Probation window after a fresh QR link: halved caps, doubled gaps.
   warmupHours: parseFloat(opt('WA_WARMUP_HOURS', '72')),
+  // 007 voice processing (ElevenLabs). No key → the feature is off: inbound
+  // voice notes keep their empty body, /send-voice answers 503 voice_disabled.
+  eleven: {
+    apiKey: opt('ELEVENLABS_API_KEY', ''),
+    voiceId: opt('ELEVENLABS_VOICE_ID', ''),
+    ttsModel: opt('ELEVENLABS_TTS_MODEL', 'eleven_flash_v2_5'),
+    sttModel: opt('ELEVENLABS_STT_MODEL', 'scribe_v1'),
+    // Ogg Opus @48kHz — WhatsApp's own voice-note codec, sent as-is.
+    ttsFormat: opt('ELEVENLABS_TTS_FORMAT', 'opus_48000_64'),
+    timeoutMs: parseInt(opt('ELEVENLABS_TIMEOUT_MS', '60000'), 10),
+    // Don't burn STT credits on hour-long forwarded audio.
+    maxSttSeconds: parseInt(opt('WA_STT_MAX_SECONDS', '600'), 10),
+  },
   // Baileys socket timings (research §2).
   keepAliveIntervalMs: parseInt(opt('WA_KEEPALIVE_MS', '15000'), 10),
   connectTimeoutMs: parseInt(opt('WA_CONNECT_TIMEOUT_MS', '60000'), 10),

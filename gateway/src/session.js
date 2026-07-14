@@ -9,6 +9,7 @@
 
 import makeWASocket, {
   DisconnectReason,
+  downloadMediaMessage,
   fetchLatestBaileysVersion,
   useMultiFileAuthState,
 } from '@whiskeysockets/baileys';
@@ -19,6 +20,7 @@ import path from 'node:path';
 import { config } from './config.js';
 import { insertMessage, upsertChat, updateAccount, bumpSendCounter } from './db.js';
 import { forwardInbound } from './inbound.js';
+import { voiceEnabled, transcribeAudio, synthesizeVoice } from './voice.js';
 
 const LOG_LEVEL = process.env.WA_LOG_LEVEL || 'warn';
 
@@ -374,7 +376,17 @@ export class Session {
     const senderJid = kind === 'group'
       ? (message.key.participant || null)
       : (fromMe ? this.selfJid : chatJid);
-    const { kind: msgKind, body } = extractContent(message);
+    let { kind: msgKind, body } = extractContent(message);
+    // 007: inbound voice note → transcript. The transcript becomes the body in
+    // both the capture row and the envelope, so Luna reads it like text.
+    let transcribed = false;
+    if (msgKind === 'audio' && !fromMe && isNotify && voiceEnabled()) {
+      const transcript = await this.transcribeVoiceNote(message);
+      if (transcript) {
+        body = transcript;
+        transcribed = true;
+      }
+    }
     const ctxInfo = contextInfoOf(message);
     const replyToId = ctxInfo?.stanzaId || null;
     const mentionedJids = ctxInfo?.mentionedJid || [];
@@ -434,10 +446,33 @@ export class Session {
         ts,
         kind: msgKind,
         body,
+        transcribed,
         mentioned_me: !!mentionedMe,
         is_reply_to_me: !!isReplyToMe,
       }, { url: this.inboundUrl, secret: this.secret }),
     );
+  }
+
+  // Download a voice note's bytes and run ElevenLabs STT. Never throws — a
+  // transcription failure degrades to the pre-007 empty-body audio envelope.
+  async transcribeVoiceNote(message) {
+    const audio = message.message?.audioMessage;
+    if (!audio) return null;
+    if ((Number(audio.seconds) || 0) > config.eleven.maxSttSeconds) {
+      console.warn('[wa:%s] audio too long for STT (%ss) — skipping',
+        this.accountId, audio.seconds);
+      return null;
+    }
+    try {
+      const buf = await downloadMediaMessage(message, 'buffer', {}, {
+        logger: this.sock?.logger,
+        reuploadRequest: this.sock?.updateMediaMessage,
+      });
+      return await transcribeAudio(buf, { mimetype: audio.mimetype || 'audio/ogg' });
+    } catch (e) {
+      console.error('[wa:%s] voice transcription failed:', this.accountId, e.message);
+      return null;
+    }
   }
 
   async handleReaction(entry) {
@@ -663,6 +698,14 @@ export class Session {
     }
     if (row.kind === 'react') {
       return this.react(row.chat_jid, p.wa_msg_id, p.emoji);
+    }
+    if (row.kind === 'voice') {
+      // TTS at delivery time (not enqueue time) so a queued voice send that
+      // gets canceled never spends ElevenLabs credits.
+      const { buffer, mimetype } = await synthesizeVoice(p.text, { voiceId: p.voice_id });
+      return this.sendMedia(row.chat_jid, 'audio', buffer, {
+        mimetype, ptt: true, replyToWaId: p.reply_to,
+      });
     }
     if (row.kind === 'media') {
       let source;
