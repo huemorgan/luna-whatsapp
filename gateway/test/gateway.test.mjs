@@ -515,3 +515,48 @@ test('Session: stop clears watchdog and blocks reconnects', async () => {
   assert.equal(s.reconnecting, false); // no-op after stop
   assert.equal(s.getConnState().status, 'disabled');
 });
+
+// ---------------------------------------------------------------------------
+// 008: per-account ElevenLabs voice config
+// ---------------------------------------------------------------------------
+
+test('voiceCfg: no account key → platform env values (empty in tests)', () => {
+  const s = new Session({ account_id: 'a', secret: 's' });
+  const cfg = s.voiceCfg();
+  assert.equal(cfg.apiKey, '');   // no ELEVENLABS_API_KEY in the test env
+  assert.equal(cfg.voiceId, '');
+});
+
+test('voiceCfg: account key + voice override the platform values', () => {
+  const s = new Session({
+    account_id: 'a', secret: 's',
+    eleven_key: 'tenant-key', eleven_voice_id: 'tenant-voice',
+  });
+  const cfg = s.voiceCfg();
+  assert.equal(cfg.apiKey, 'tenant-key');
+  assert.equal(cfg.voiceId, 'tenant-voice');
+  // models/format/timeouts still come from env config
+  assert.equal(cfg.ttsModel, 'eleven_flash_v2_5');
+  assert.equal(cfg.sttModel, 'scribe_v1');
+});
+
+test('voiceCfg: key-only account keeps the platform voice fallback', () => {
+  const s = new Session({ account_id: 'a', secret: 's', eleven_key: 'tenant-key' });
+  const cfg = s.voiceCfg();
+  assert.equal(cfg.apiKey, 'tenant-key');
+  assert.equal(cfg.voiceId, ''); // platform default (unset in tests)
+});
+
+test('updateRoute applies eleven_key/eleven_voice_id live, null clears back to platform', () => {
+  const s = new Session({ account_id: 'a', secret: 's' });
+  s.updateRoute({ eleven_key: 'k1', eleven_voice_id: 'v1' });
+  assert.equal(s.voiceCfg().apiKey, 'k1');
+  assert.equal(s.voiceCfg().voiceId, 'v1');
+  s.updateRoute({ eleven_key: null, eleven_voice_id: null });
+  assert.equal(s.voiceCfg().apiKey, '');
+  assert.equal(s.voiceCfg().voiceId, '');
+  // undefined = untouched
+  s.updateRoute({ eleven_key: 'k2' });
+  s.updateRoute({ inbound_url: 'https://x' });
+  assert.equal(s.voiceCfg().apiKey, 'k2');
+});

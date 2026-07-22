@@ -128,12 +128,16 @@ export async function createAccount({ account_id, inbound_url, daily_cap }) {
 }
 
 // PATCH /accounts/{id}. Returns the new secret only when rotated.
-export async function patchAccount(accountId, { inbound_url, daily_cap, rotate_secret }) {
+export async function patchAccount(accountId, {
+  inbound_url, daily_cap, rotate_secret, eleven_key, eleven_voice_id,
+}) {
   const existing = await getAccount(accountId);
   if (!existing || !existing.enabled) return null;
   const patch = {};
   if (inbound_url !== undefined) patch.inbound_url = inbound_url;
   if (daily_cap !== undefined) patch.daily_cap = daily_cap;
+  if (eleven_key !== undefined) patch.eleven_key = eleven_key;
+  if (eleven_voice_id !== undefined) patch.eleven_voice_id = eleven_voice_id;
   let newSecret = null;
   if (rotate_secret) {
     newSecret = crypto.randomBytes(32).toString('hex');
@@ -144,6 +148,7 @@ export async function patchAccount(accountId, { inbound_url, daily_cap, rotate_s
     : existing;
   sessions.get(accountId)?.updateRoute({
     inbound_url: row.inbound_url, secret: row.secret, daily_cap: row.daily_cap,
+    eleven_key: row.eleven_key, eleven_voice_id: row.eleven_voice_id,
   });
   return { row, secret: newSecret };
 }

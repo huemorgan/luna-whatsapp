@@ -247,6 +247,10 @@ export class Session {
     this.watchdogTimer = null;
     this.groupNameCache = new Map(); // jid -> { name, at }
 
+    // 008: per-account ElevenLabs voice (tenant key pushed by luna-service).
+    this.elevenKey = row.eleven_key || null;
+    this.elevenVoiceId = row.eleven_voice_id || null;
+
     // 006 anti-ban state (persisted on the registry row).
     this.proxyUrl = row.proxy_url || null;
     this.linkedAt = row.linked_at ? new Date(row.linked_at).getTime() : null;
@@ -314,10 +318,22 @@ export class Session {
   }
 
   // Live registry updates (PATCH /accounts/{id}) — no session restart needed.
-  updateRoute({ inbound_url, secret, daily_cap } = {}) {
+  updateRoute({ inbound_url, secret, daily_cap, eleven_key, eleven_voice_id } = {}) {
     if (inbound_url !== undefined) this.inboundUrl = inbound_url || '';
     if (secret !== undefined) this.secret = secret;
     if (daily_cap !== undefined) this.dailyCap = daily_cap ?? config.sendDailyCap;
+    if (eleven_key !== undefined) this.elevenKey = eleven_key || null;
+    if (eleven_voice_id !== undefined) this.elevenVoiceId = eleven_voice_id || null;
+  }
+
+  // ElevenLabs config for THIS account: tenant key/voice when set, platform
+  // env values otherwise. Models/format/timeouts always come from env.
+  voiceCfg() {
+    return {
+      ...config.eleven,
+      ...(this.elevenKey ? { apiKey: this.elevenKey } : {}),
+      ...(this.elevenVoiceId ? { voiceId: this.elevenVoiceId } : {}),
+    };
   }
 
   markActivity() {
@@ -380,7 +396,7 @@ export class Session {
     // 007: inbound voice note → transcript. The transcript becomes the body in
     // both the capture row and the envelope, so Luna reads it like text.
     let transcribed = false;
-    if (msgKind === 'audio' && !fromMe && isNotify && voiceEnabled()) {
+    if (msgKind === 'audio' && !fromMe && isNotify && voiceEnabled(this.voiceCfg())) {
       const transcript = await this.transcribeVoiceNote(message);
       if (transcript) {
         body = transcript;
@@ -468,7 +484,9 @@ export class Session {
         logger: this.sock?.logger,
         reuploadRequest: this.sock?.updateMediaMessage,
       });
-      return await transcribeAudio(buf, { mimetype: audio.mimetype || 'audio/ogg' });
+      return await transcribeAudio(buf, {
+        mimetype: audio.mimetype || 'audio/ogg', cfg: this.voiceCfg(),
+      });
     } catch (e) {
       console.error('[wa:%s] voice transcription failed:', this.accountId, e.message);
       return null;
@@ -702,7 +720,9 @@ export class Session {
     if (row.kind === 'voice') {
       // TTS at delivery time (not enqueue time) so a queued voice send that
       // gets canceled never spends ElevenLabs credits.
-      const { buffer, mimetype } = await synthesizeVoice(p.text, { voiceId: p.voice_id });
+      const { buffer, mimetype } = await synthesizeVoice(p.text, {
+        voiceId: p.voice_id, cfg: this.voiceCfg(),
+      });
       return this.sendMedia(row.chat_jid, 'audio', buffer, {
         mimetype, ptt: true, replyToWaId: p.reply_to,
       });

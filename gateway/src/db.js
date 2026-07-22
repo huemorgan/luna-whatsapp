@@ -87,6 +87,11 @@ ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS breaker_reason text;
 ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS linked_at      timestamptz;
 ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS proxy_url      text;
 
+-- 008: per-account ElevenLabs voice. Tenant keys pushed by luna-service; the
+-- platform env key stays the fallback so existing accounts keep working.
+ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS eleven_key      text;
+ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS eleven_voice_id text;
+
 -- 006: persistent outbound queue. Every send is a row here first; a per-account
 -- worker drains serially with class-based pacing, so a burst is impossible no
 -- matter what callers do. Survives restarts/deploys by construction.
@@ -198,6 +203,7 @@ const ACCOUNT_COLS = new Set([
   'secret', 'inbound_url', 'status', 'self_jid', 'last_seen',
   'sent_today', 'sent_day', 'daily_cap', 'enabled',
   'breaker_until', 'breaker_reason', 'linked_at', 'proxy_url',
+  'eleven_key', 'eleven_voice_id',
 ]);
 
 export async function updateAccount(accountId, patch) {

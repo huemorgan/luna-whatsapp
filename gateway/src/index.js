@@ -164,6 +164,9 @@ function accountView(row, session) {
     daily_cap: row.daily_cap ?? config.sendDailyCap,
     last_seen: row.last_seen instanceof Date ? row.last_seen.toISOString() : row.last_seen,
     enabled: row.enabled !== false,
+    // Key material never leaves the gateway — booleans only.
+    voice_configured: !!(row.eleven_key || config.eleven.apiKey),
+    voice_key_source: row.eleven_key ? 'account' : (config.eleven.apiKey ? 'platform' : null),
     created_at: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
     breaker: session?.breakerOpen()
       ? { reason: session.breakerReason, until: new Date(session.breakerUntil).toISOString() }
@@ -226,9 +229,11 @@ app.get('/accounts/:id/qr', async (req, res) => {
 
 app.patch('/accounts/:id', async (req, res) => {
   if (!requireAdmin(req, res)) return;
-  const { inbound_url, daily_cap, rotate_secret } = req.body || {};
+  const { inbound_url, daily_cap, rotate_secret, eleven_key, eleven_voice_id } = req.body || {};
   try {
-    const result = await patchAccount(req.params.id, { inbound_url, daily_cap, rotate_secret });
+    const result = await patchAccount(req.params.id, {
+      inbound_url, daily_cap, rotate_secret, eleven_key, eleven_voice_id,
+    });
     if (!result) return res.status(404).json({ error: 'no such account' });
     res.json({
       ...accountView(result.row, getSession(req.params.id)),
@@ -489,21 +494,22 @@ app.post('/send-voice', async (req, res) => {
   if (!chat_jid || !text) {
     return res.status(400).json({ error: 'chat_jid and text required' });
   }
-  if (!voiceEnabled()) {
+  const vcfg = session.voiceCfg();
+  if (!voiceEnabled(vcfg)) {
     return res.status(503).json({
       ok: false, code: 'voice_disabled',
-      error: 'voice is not configured on this gateway (ELEVENLABS_API_KEY missing)',
+      error: 'voice is not configured for this account (no account key or ELEVENLABS_API_KEY)',
     });
   }
-  if (!voice_id && !config.eleven.voiceId) {
+  if (!voice_id && !vcfg.voiceId) {
     return res.status(400).json({
-      ok: false, error: 'no voice configured — set ELEVENLABS_VOICE_ID or pass voice_id',
+      ok: false, error: 'no voice configured — set an account voice, ELEVENLABS_VOICE_ID, or pass voice_id',
     });
   }
   try {
     const jid = await session.resolveJid(chat_jid);
     if (!config.outboxEnabled || !session.outbox) {
-      const { buffer, mimetype } = await synthesizeVoice(text, { voiceId: voice_id });
+      const { buffer, mimetype } = await synthesizeVoice(text, { voiceId: voice_id, cfg: vcfg });
       const result = await session.sendMedia(jid, 'audio', buffer, {
         mimetype, ptt: true, replyToWaId: reply_to,
       });

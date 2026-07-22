@@ -3,7 +3,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { voiceEnabled, transcribeAudio, synthesizeVoice } from '../src/voice.js';
+// Dummy env before importing anything that pulls config.js (loads at import).
+process.env.WA_SHARED_SECRET ||= 'unit-test-secret';
+process.env.GATEWAY_ADMIN_KEY ||= 'unit-test-admin';
+process.env.DATABASE_URL ||= 'postgres://localhost/none';
+
+const { voiceEnabled, transcribeAudio, synthesizeVoice } = await import('../src/voice.js');
 
 const CFG = {
   apiKey: 'k-test',
@@ -85,4 +90,25 @@ test('synthesizeVoice refuses without any voice id (status 400)', async () => {
     synthesizeVoice('hi', { fetchImpl: fakeFetch(async () => ({})), cfg: { ...CFG, voiceId: '' } }),
     (e) => e.status === 400 && /voice/i.test(e.message),
   );
+});
+
+test('voiceEnabled: an account key alone enables voice (no platform key)', async () => {
+  const { Session } = await import('../src/session.js');
+  const s = new Session({ account_id: 'a', secret: 's', eleven_key: 'tenant-key' });
+  assert.equal(voiceEnabled(s.voiceCfg()), true);
+  const bare = new Session({ account_id: 'b', secret: 's' });
+  assert.equal(voiceEnabled(bare.voiceCfg()), false); // no env key in tests
+});
+
+test('synthesizeVoice with a tenant cfg sends the tenant key and voice', async () => {
+  const f = fakeFetch(async () => ({
+    ok: true, arrayBuffer: async () => new ArrayBuffer(0),
+  }));
+  await synthesizeVoice('hi', {
+    fetchImpl: f,
+    cfg: { ...CFG, apiKey: 'tenant-11labs', voiceId: 'tenant-voice' },
+  });
+  const { url, opts } = f.calls[0];
+  assert.match(url, /text-to-speech\/tenant-voice\?/);
+  assert.equal(opts.headers['xi-api-key'], 'tenant-11labs');
 });
